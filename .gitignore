@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local CLI session state (antigravity)
+.antigravitycli/
+
+# Test scratch (we keep tests under tests/, but smoke runs leave /tmp dirs;
+# stray state dirs accidentally written under the repo are ignored too).
+.cmt-test-state/
+.cmt-smoke-state/

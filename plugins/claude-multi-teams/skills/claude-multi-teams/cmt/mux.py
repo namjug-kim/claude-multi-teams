@@ -1,0 +1,281 @@
+"""Thin wrappers around the host multiplexer's CLI.
+
+Two backends, dispatched at runtime per call:
+
+- **real tmux**  — when ``$TMUX`` is empty or points at a non-cmux server.
+  We shell out to ``tmux``; the server is inherited from ``$TMUX``.
+- **cmux native** — when ``$TMUX`` points at the cmux ``claude-teams`` fake
+  tmux path (``/tmp/cmux-claude-teams/…``). The ``tmux`` shim on PATH can
+  spawn panes and send keys but its split-window outputs are *shim-only*
+  pseudo-panes that don't show up in cmux's UI, and its ``paste-buffer``
+  doesn't deliver bracketed paste to the receiving TUI. We bypass the shim
+  for everything and call ``cmux`` directly. The created panes ARE real
+  cmux surfaces (visible in the sidebar).
+
+State files store the mux-native pane id as a string. Real tmux uses
+``%<UUID>`` or ``%<N>``; cmux uses ``surface:<N>``. Each backend's ops
+read/write whichever format their CLI accepts.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+from typing import Literal
+
+CaptureMode = Literal["visible", "full", "wrapped"]
+
+
+# ---------------------------------------------------------------------------
+# Backend dispatch
+# ---------------------------------------------------------------------------
+
+
+def _use_cmux_native() -> bool:
+    """True when we're inside cmux ``claude-teams`` and should bypass the
+    tmux shim. Detected by ``$TMUX`` starting with the cmux-claude-teams
+    fake path. Plain cmux (without claude-teams) and real tmux both return
+    False — those go down the tmux path.
+    """
+    return os.environ.get("TMUX", "").startswith("/tmp/cmux-claude-teams")
+
+
+# ---------------------------------------------------------------------------
+# tmux backend
+# ---------------------------------------------------------------------------
+
+
+def _tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["tmux", *args],
+        check=check,
+        capture_output=capture,
+        text=True,
+    )
+
+
+def _tmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, str]) -> str:
+    if env_vars:
+        prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items())
+        cmd = f"{prefix} exec {cmd}"
+    res = _tmux("split-window", "-h", "-t", parent_pane, "-c", cwd,
+                "-P", "-F", "#{pane_id}", cmd)
+    return res.stdout.strip()
+
+
+def _tmux_paste_bracketed(pane: str, text: str) -> None:
+    _tmux("set-buffer", "--", text)
+    _tmux("paste-buffer", "-p", "-t", pane)
+
+
+def _tmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:
+    _tmux("send-keys", "-t", pane, *keys)
+
+
+def _tmux_capture(pane: str, mode: CaptureMode) -> str:
+    args = ["capture-pane", "-p", "-t", pane]
+    if mode == "full":
+        args.extend(["-S", "-", "-E", "-"])
+    elif mode == "wrapped":
+        args.extend(["-S", "-", "-E", "-", "-J"])
+    return _tmux(*args).stdout
+
+
+def _tmux_kill_pane(pane: str) -> None:
+    _tmux("kill-pane", "-t", pane, check=False)
+
+
+def _tmux_pane_alive(pane: str) -> bool:
+    res = _tmux("list-panes", "-a", "-F", "#{pane_id}", check=False)
+    if res.returncode != 0:
+        return False
+    return pane in res.stdout.split()
+
+
+def _tmux_list_panes() -> list[str]:
+    res = _tmux("list-panes", "-a", "-F", "#{pane_id}", check=False)
+    if res.returncode != 0:
+        return []
+    return [p for p in res.stdout.split() if p]
+
+
+# ---------------------------------------------------------------------------
+# cmux backend
+# ---------------------------------------------------------------------------
+
+
+def _cmux(*args: str, check: bool = True, capture: bool = True,
+          stdout=None) -> subprocess.CompletedProcess:
+    kwargs: dict = {"check": check, "text": True}
+    if stdout is not None:
+        # caller wants stdout discarded or redirected — keep stderr captured
+        kwargs["stdout"] = stdout
+        kwargs["stderr"] = subprocess.PIPE
+    elif capture:
+        kwargs["capture_output"] = True
+    return subprocess.run(["cmux", *args], **kwargs)
+
+
+def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, str]) -> str:
+    """Create a new cmux pane and run ``cmd`` in it via the new pane's shell.
+
+    cmux's ``new-pane`` always spawns the user's default shell (no --command
+    flag). We send the command via ``cmux send`` (typed into the shell) + a
+    final Enter via ``cmux send-key``. ``exec`` replaces the shell with the
+    agent so the pane's foreground process becomes the agent directly.
+
+    ``parent_pane`` is ignored; cmux defaults to ``$CMUX_WORKSPACE_ID``.
+    ``cwd`` is folded into the command (``cd && …``) since new-pane has
+    no --cwd flag either.
+    """
+    res = _cmux("new-pane", "--direction", "right")
+    # output format: "OK surface:58 pane:53 workspace:1\n"
+    surface_ref = next(tok for tok in res.stdout.split() if tok.startswith("surface:"))
+
+    prefix_parts = [f"cd {shlex.quote(cwd)} &&"]
+    if env_vars:
+        prefix_parts.append(" ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items()))
+    prefix_parts.append("exec")
+    full_cmd = " ".join(prefix_parts) + " " + cmd
+    _cmux("send", "--surface", surface_ref, full_cmd, stdout=subprocess.DEVNULL)
+    _cmux("send-key", "--surface", surface_ref, "Enter", stdout=subprocess.DEVNULL)
+    return surface_ref
+
+
+def _cmux_paste_bracketed(pane: str, text: str) -> None:
+    buf_name = f"cmt-{pane.replace(':', '-')}"
+    _cmux("set-buffer", "--name", buf_name, "--", text, stdout=subprocess.DEVNULL)
+    _cmux("paste-buffer", "--name", buf_name, "--surface", pane, stdout=subprocess.DEVNULL)
+
+
+# tmux uses "Enter" / "C-u" / "Escape"; cmux uses "enter" / "ctrl+u" / "esc".
+# Map the tmux spellings we ship in CLI surface to cmux's vocabulary. Literal
+# single characters and unrecognized names pass through as-is.
+_TMUX_TO_CMUX_KEY = {
+    "Enter": "enter",
+    "Tab": "tab",
+    "Space": "space",
+    "Escape": "esc", "Esc": "esc",
+    "Up": "up", "Down": "down", "Left": "left", "Right": "right",
+    "BSpace": "backspace", "Backspace": "backspace",
+    "Delete": "delete", "Home": "home", "End": "end",
+    "PageUp": "pageup", "PageDown": "pagedown",
+}
+
+
+def _tmux_key_to_cmux(key: str) -> str:
+    if key in _TMUX_TO_CMUX_KEY:
+        return _TMUX_TO_CMUX_KEY[key]
+    # tmux modifier syntax — C-u → ctrl+u, M-u → alt+u, S-u → shift+u
+    if len(key) >= 3 and key[1] == "-" and key[0] in ("C", "M", "S"):
+        mod = {"C": "ctrl", "M": "alt", "S": "shift"}[key[0]]
+        rest = key[2:]
+        return f"{mod}+{rest.lower() if len(rest) == 1 else rest}"
+    return key
+
+
+def _cmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:
+    # cmux send-key takes one key per call (no varargs).
+    for k in keys:
+        _cmux("send-key", "--surface", pane, _tmux_key_to_cmux(k),
+              stdout=subprocess.DEVNULL)
+
+
+def _cmux_capture(pane: str, mode: CaptureMode) -> str:
+    args = ["capture-pane", "--surface", pane]
+    if mode in ("full", "wrapped"):
+        args.append("--scrollback")
+    res = _cmux(*args)
+    return res.stdout
+
+
+def _cmux_kill_pane(pane: str) -> None:
+    _cmux("close-surface", "--surface", pane, check=False, stdout=subprocess.DEVNULL)
+
+
+def _cmux_pane_alive(pane: str) -> bool:
+    # `capture-pane` on a missing surface errors. A 0-exit capture means the
+    # surface exists and is a terminal.
+    res = _cmux("capture-pane", "--surface", pane, "--lines", "1",
+                check=False, capture=False, stdout=subprocess.DEVNULL)
+    return res.returncode == 0
+
+
+def _cmux_list_panes() -> list[str]:
+    """Best-effort list of cmux terminal surfaces in the current workspace,
+    returned as ``surface:N`` refs."""
+    res = _cmux("list-pane-surfaces", check=False)
+    if res.returncode != 0:
+        return []
+    out: list[str] = []
+    for line in res.stdout.splitlines():
+        for tok in line.split():
+            if tok.startswith("surface:"):
+                out.append(tok)
+                break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public dispatch
+# ---------------------------------------------------------------------------
+
+
+def split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, str]) -> str:
+    """Spawn a pane running ``cmd`` with ``env_vars`` injected. Returns
+    the pane id (mux-native; ``%<…>`` for tmux, ``surface:<N>`` for cmux)."""
+    if _use_cmux_native():
+        return _cmux_split_pane(parent_pane, cwd, cmd, env_vars)
+    return _tmux_split_pane(parent_pane, cwd, cmd, env_vars)
+
+
+def paste_bracketed(pane: str, text: str) -> None:
+    """Deliver ``text`` to the pane as a bracketed paste."""
+    if _use_cmux_native():
+        _cmux_paste_bracketed(pane, text)
+        return
+    _tmux_paste_bracketed(pane, text)
+
+
+def send_text(pane: str, text: str) -> None:
+    """Paste ``text`` then press Enter."""
+    paste_bracketed(pane, text)
+    send_keys(pane, "Enter")
+
+
+def send_keys(pane: str, *keys: str) -> None:
+    """Forward key names (``Enter``, ``Down``, ``Tab``, ``Escape``, …) or
+    literal strings to the pane."""
+    if _use_cmux_native():
+        _cmux_send_keys(pane, keys)
+        return
+    _tmux_send_keys(pane, keys)
+
+
+def capture(pane: str, mode: CaptureMode = "full") -> str:
+    """Return the rendered pane text. ``visible``/``full``/``wrapped`` —
+    ``wrapped`` joins soft-wrapped lines (tmux ``-J``)."""
+    if _use_cmux_native():
+        return _cmux_capture(pane, mode)
+    return _tmux_capture(pane, mode)
+
+
+def kill_pane(pane: str) -> None:
+    """Destroy the pane. Silent on already-dead pane."""
+    if _use_cmux_native():
+        _cmux_kill_pane(pane)
+        return
+    _tmux_kill_pane(pane)
+
+
+def pane_alive(pane: str) -> bool:
+    if _use_cmux_native():
+        return _cmux_pane_alive(pane)
+    return _tmux_pane_alive(pane)
+
+
+def list_panes() -> list[str]:
+    if _use_cmux_native():
+        return _cmux_list_panes()
+    return _tmux_list_panes()

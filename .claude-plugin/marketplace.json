@@ -1,0 +1,29 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-multi-teams-marketplace",
+  "description": "Marketplace hosting the claude-multi-teams plugin — a tmux-based multi-agent harness for Claude Code / codex.",
+  "owner": {
+    "name": "namjug.kim"
+  },
+  "plugins": [
+    {
+      "name": "claude-multi-teams",
+      "source": "./plugins/claude-multi-teams",
+      "description": "Spawn tmux-resident claude/codex worker panes and orchestrate them: single ask, multi-turn, parallel fanout review, P2P discussion, impl-review loop. Includes call-tree viewers (ASCII / HTML / Markdown).",
+      "author": {
+        "name": "namjug.kim"
+      },
+      "version": "0.1.0",
+      "category": "development",
+      "keywords": [
+        "multi-agent",
+        "tmux",
+        "claude-code",
+        "codex",
+        "review",
+        "orchestration",
+        "fanout"
+      ]
+    }
+  ]
+}

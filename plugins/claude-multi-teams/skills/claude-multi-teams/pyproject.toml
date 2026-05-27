@@ -1,0 +1,20 @@
+[project]
+name = "cmt"
+version = "0.0.0"
+description = "claude-multi-teams: drive AI agent CLIs in tmux panes"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cmt*"]
+
+[project.scripts]
+cmt = "cmt.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = "-q"

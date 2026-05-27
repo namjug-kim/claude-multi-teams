@@ -1,0 +1,7 @@
+#!/bin/sh
+# cmt — entry point for the cmt python package.
+# The plugin marketplace lays this script down at <skill>/bin/cmt alongside
+# the cmt/ package one level up. It prepends the skill dir to sys.path so the
+# package is importable without `pip install`.
+SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec python3 -c "import sys; sys.path.insert(0, '$SKILL_DIR'); from cmt.__main__ import main; sys.exit(main())" "$@"
