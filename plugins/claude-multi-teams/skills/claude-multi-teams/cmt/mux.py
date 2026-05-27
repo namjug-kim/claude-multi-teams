@@ -34,11 +34,24 @@ CaptureMode = Literal["visible", "full", "wrapped"]
 
 def _use_cmux_native() -> bool:
     """True when we're inside cmux ``claude-teams`` and should bypass the
-    tmux shim. Detected by ``$TMUX`` starting with the cmux-claude-teams
-    fake path. Plain cmux (without claude-teams) and real tmux both return
-    False — those go down the tmux path.
+    tmux shim. Detected by either:
+
+    - ``$TMUX`` starting with the cmux-claude-teams fake path (the outer
+      shell our user starts cmt from has this set), OR
+    - ``$CMUX_SOCKET_PATH`` is set (panes that cmux itself spawned —
+      including the ones cmt creates for sibling agents — inherit this
+      from cmux's daemon env but do NOT inherit ``$TMUX``).
+
+    Without the second check, a sibling agent invoking cmt back from its
+    own Bash tool would fall through to the tmux path and try to find
+    cmux-shaped ``surface:N`` ids via ``tmux list-panes`` — which fails,
+    surfacing as a false "pane is dead".
     """
-    return os.environ.get("TMUX", "").startswith("/tmp/cmux-claude-teams")
+    if os.environ.get("TMUX", "").startswith("/tmp/cmux-claude-teams"):
+        return True
+    if os.environ.get("CMUX_SOCKET_PATH"):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
