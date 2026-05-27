@@ -102,6 +102,23 @@ def _codex_post_spawn_warmup(ctx: SpawnContext, pane_id: str) -> None:
     )
 
 
+def _agy_argv(ctx: SpawnContext) -> list[str]:
+    binary = os.environ.get("CMT_AGY_BIN", "agy")
+    return [binary, "--dangerously-skip-permissions"]
+
+
+def _agy_session_file(ctx: SpawnContext, env: dict[str, str]) -> str | None:
+    return None  # agy has no jsonl — all extraction is screen-based
+
+
+def _agy_post_spawn_warmup(ctx: SpawnContext, pane_id: str) -> None:
+    from cmt import agy_warmup, mux
+    agy_warmup.run_agy_warmup(
+        capture=lambda: mux.capture(pane_id, mode="full"),
+        send_key=lambda key: mux.send_keys(pane_id, key),
+    )
+
+
 def _codex_resolve_session_file(ctx: SpawnContext, spawn_marker: str | None) -> str | None:
     """Block until a new rollout file appears, return its path. Called from
     the first ``ask`` if state.session_file is still None for codex.
@@ -122,11 +139,53 @@ def _codex_resolve_session_file(ctx: SpawnContext, spawn_marker: str | None) -> 
 
 
 def _build_agents() -> dict[str, AgentSpec]:
-    # Import strategies / extract lazily to avoid a circular import at module
-    # load time (strategies/extract are pure, but cmt/__init__ collection order
-    # is easier to reason about with this defer).
+    # Lazy imports to keep module-load order simple.
+    from pathlib import Path as _Path
     from cmt import extract as _extract
     from cmt import strategies as _strategies
+
+    def _path(state):
+        return _Path(state.session_file)
+
+    # claude — jsonl + stop_reason
+    def _claude_await(state, is_alive):
+        return _strategies.await_jsonl_done(_path(state), state.baseline_offset, is_alive)
+
+    def _claude_status(state, pane_alive):
+        return _strategies.status_jsonl(_path(state), state.baseline_offset, pane_alive)
+
+    def _claude_extract(state):
+        return _extract.extract_jsonl_assistant(_path(state), state.baseline_offset)
+
+    # codex — rollout jsonl + task_complete
+    def _codex_await(state, is_alive):
+        return _strategies.await_codex_done(_path(state), state.baseline_offset, is_alive)
+
+    def _codex_status(state, pane_alive):
+        return _strategies.status_codex(_path(state), state.baseline_offset, pane_alive)
+
+    def _codex_extract(state):
+        return _extract.extract_codex_response(_path(state), state.baseline_offset)
+
+    # agy — screen-based via capture-pane
+    from cmt import agy_screen as _agy_screen, mux as _mux
+
+    def _agy_await(state, is_alive):
+        return _agy_screen.await_done(
+            capture=lambda: _mux.capture(state.pane_id, mode="full"),
+            is_alive=is_alive,
+        )
+
+    def _agy_status(state, pane_alive):
+        if not pane_alive:
+            return "dead"
+        return _agy_screen.status_from_screen(
+            _mux.capture(state.pane_id, mode="full"),
+            pane_alive=True,
+        )
+
+    def _agy_extract(state):
+        return _agy_screen.extract_response(_mux.capture(state.pane_id, mode="full"))
 
     return {
         "claude": AgentSpec(
@@ -134,9 +193,9 @@ def _build_agents() -> dict[str, AgentSpec]:
             propagate_env_prefixes=("CLAUDE_", "ANTHROPIC_"),
             build_argv=_claude_argv,
             session_file=_claude_session_file,
-            await_done=_strategies.await_jsonl_done,
-            status_fn=_strategies.status_jsonl,
-            extract_response=_extract.extract_jsonl_assistant,
+            await_done=_claude_await,
+            status_fn=_claude_status,
+            extract_response=_claude_extract,
         ),
         "codex": AgentSpec(
             name="codex",
@@ -146,11 +205,20 @@ def _build_agents() -> dict[str, AgentSpec]:
             pre_spawn_marker=_codex_pre_spawn_marker,
             post_spawn_warmup=_codex_post_spawn_warmup,
             resolve_session_file=_codex_resolve_session_file,
-            await_done=_strategies.await_codex_done,
-            status_fn=_strategies.status_codex,
-            extract_response=_extract.extract_codex_response,
+            await_done=_codex_await,
+            status_fn=_codex_status,
+            extract_response=_codex_extract,
         ),
-        # agy added in a subsequent slice.
+        "agy": AgentSpec(
+            name="agy",
+            propagate_env_prefixes=("AGY_", "ANTIGRAVITY_", "GEMINI_", "GOOGLE_"),
+            build_argv=_agy_argv,
+            session_file=_agy_session_file,
+            post_spawn_warmup=_agy_post_spawn_warmup,
+            await_done=_agy_await,
+            status_fn=_agy_status,
+            extract_response=_agy_extract,
+        ),
     }
 
 

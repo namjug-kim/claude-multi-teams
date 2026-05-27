@@ -11,9 +11,20 @@ from cmt import agents, mux, state
 def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
     """Send ``prompt`` to agent ``name`` and return the assistant text.
 
-    Raises ``FileNotFoundError`` if the agent isn't known, ``RuntimeError``
-    if its pane is already dead or dies during the turn. No timeout — see
-    CONTEXT.md "Liveness and timeouts".
+    Three code paths, distinguished by whether the agent has a jsonl session
+    file and whether that file is already known:
+
+      - **jsonl, known** (claude after spawn, codex after first ask):
+        update baseline_offset from current file size, send prompt, await
+        done via jsonl tail.
+      - **jsonl, unknown** (codex first ask): send prompt first (codex only
+        writes a rollout file on user input), then call the spec's
+        resolve_session_file to locate the new file.
+      - **screen-based** (agy): session_file stays None forever; send prompt,
+        await done via screen capture, extract from screen.
+
+    Raises ``FileNotFoundError`` for an unknown name, ``RuntimeError`` if
+    the pane is dead. No wall-clock timeout — see CONTEXT.md.
     """
     s = state.load(name, state_dir=state_dir)
     if s is None:
@@ -25,19 +36,12 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
     spec = agents.AGENTS.get(s.agent)
     if spec is None or spec.await_done is None or spec.extract_response is None:
         raise NotImplementedError(
-            f"agent {s.agent!r}: no jsonl/extract strategy registered "
-            "(capture-pane strategy not in this slice)."
+            f"agent {s.agent!r}: no done/extract strategy registered."
         )
 
-    # Branch on whether the session file is already known. claude knows it
-    # at spawn; codex resolves it on the first ask (after sending the prompt
-    # so codex actually writes a rollout file).
-    if s.session_file is None:
-        if spec.resolve_session_file is None:
-            raise NotImplementedError(
-                f"agent {s.agent!r}: session_file is None and no resolver registered"
-            )
-        # codex path: send first, then wait for rollout file
+    if s.session_file is None and spec.resolve_session_file is not None:
+        # codex first-ask: prompt must hit the agent before the rollout file
+        # appears. Then resolve, then persist.
         mux.send_text(s.pane_id, prompt)
         ctx = agents.SpawnContext(
             name=s.name, agent_id=s.agent_id, cwd=s.cwd, session_uuid="",
@@ -49,7 +53,11 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
             )
         s = dataclasses.replace(s, session_file=new_session, baseline_offset=0)
         state.save(s, state_dir=state_dir)
+    elif s.session_file is None:
+        # Screen-based agent (agy): no session file, no baseline to maintain.
+        mux.send_text(s.pane_id, prompt)
     else:
+        # jsonl agent, known session file: bump baseline, then send.
         session_file = Path(s.session_file)
         baseline = session_file.stat().st_size if session_file.exists() else 0
         s = dataclasses.replace(s, baseline_offset=baseline)
@@ -58,13 +66,8 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
         state.save(s, state_dir=state_dir)
         mux.send_text(s.pane_id, prompt)
 
-    session_file = Path(s.session_file)
-    result = spec.await_done(
-        session_file,
-        baseline_offset=s.baseline_offset,
-        is_alive=lambda: mux.pane_alive(s.pane_id),
-    )
+    result = spec.await_done(s, lambda: mux.pane_alive(s.pane_id))
     if result == "dead":
         raise RuntimeError(f"agent {name!r} died during ask")
 
-    return spec.extract_response(session_file, baseline_offset=s.baseline_offset)
+    return spec.extract_response(s)

@@ -16,16 +16,12 @@ def status(name: str, state_dir: Path | None = None) -> strategies.AgentStatus:
     if s is None:
         return "dead"
     pane_alive = mux.pane_alive(s.pane_id)
-    if s.session_file is None:
-        # No session yet (codex pre-first-ask, or agy-style w/o jsonl) —
-        # report based on pane liveness alone.
-        return "done" if pane_alive else "dead"
     spec = agents.AGENTS.get(s.agent)
     if spec is None or spec.status_fn is None:
-        # Unknown agent: degrade gracefully.
         return "done" if pane_alive else "dead"
-    return spec.status_fn(
-        Path(s.session_file),
-        baseline_offset=s.baseline_offset,
-        pane_alive=pane_alive,
-    )
+    # jsonl agents pre-first-ask have session_file=None; that's "done"
+    # (no turn in progress). agy's status_fn handles the screen-only case.
+    if s.session_file is None and spec.resolve_session_file is not None:
+        # codex before first ask — no rollout yet
+        return "done" if pane_alive else "dead"
+    return spec.status_fn(s, pane_alive)
