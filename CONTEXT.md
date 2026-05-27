@@ -81,9 +81,10 @@ CLI dependency.
 
 ## Foundation primitives (v1 surface)
 
-The foundation exposes exactly the operations below. Workflows (later
-phases) call into these and add nothing to them. The list is closed at
-12 — additions require explicit grill.
+The foundation exposes exactly the operations below — **12 core** primitives
+that every workflow uses, plus **3 actor-model extension** primitives added
+when multi-agent P2P / consensus patterns came online. Additions to either
+set require explicit grill.
 
 ### Lifecycle
 
@@ -126,6 +127,47 @@ phases) call into these and add nothing to them. The list is closed at
 | op | role |
 |---|---|
 | `whoami` | when invoked from inside a spawned pane, resolve `$CMT_AGENT_ID` → state file → return that agent's own metadata. Lets a spawned agent identify itself and reach sibling agents. |
+
+### Actor-model extension (added 2026-05-27 for P2P / consensus)
+
+| op | role |
+|---|---|
+| `enqueue` | fire-and-forget write to an agent's inbox at `$STATE_DIR/inbox/<agent>/<ts>-<uuid>.json`. Returns immediately. Used by a scheduler to deliver one-way messages without blocking. |
+| `dequeue` | atomically take the oldest pending inbox message for an agent (FIFO by ts prefix; `rename` to claim). Returns nothing when empty (rc=1). |
+| `inbox` | peek or `--clear` an agent's inbox. Diagnostic / scheduler aid. |
+
+`ask` and the actor ops solve different problems: `ask` is the natural
+"please answer this now" verb and blocks until the agent responds, with
+cycle/mutex guards (see [Deadlock safety](#deadlock-safety) below).
+`enqueue` + `dequeue` are the building blocks of a non-blocking
+scheduler — agents process messages one at a time on their own turns,
+no agent ever waits on another, so the wait-for graph is empty by
+construction and deadlock is structurally impossible.
+
+
+## Deadlock safety
+
+Two layers, depending on which P2P pattern a workflow uses:
+
+1. **Sync (`cmt ask` from inside a spawned pane).** Before sending the
+   prompt, the call records its chain at
+   `$STATE_DIR/.calls/<target>.json` using atomic `O_CREAT|O_EXCL`. The
+   file holds the chain of agent names leading up to the call AND
+   doubles as a per-target mutex.
+   - **`CycleDetected`** if the target already appears in that chain
+     (would create a wait-for cycle).
+   - **`TargetBusy`** if a different call against the same target is
+     in flight (atomic create fails).
+   - **`DepthExceeded`** if the chain length exceeds `DEFAULT_MAX_DEPTH`
+     (6 by default).
+2. **Actor (`cmt enqueue` / `cmt dequeue`).** Agents never block on
+   each other; a scheduler routes messages between inboxes one at a
+   time. There is no wait-for relationship to deadlock.
+
+Workflows pick a layer: short interactive debates do well with the sync
+layer (faster, more natural turn-taking); long-running or many-agent
+workflows that must survive crashes/restarts use the actor layer
+(deadlock-proof, audit-friendly transcript).
 
 
 ## Per-agent spawn specifics (verified by demo, 2026-05-27)
@@ -171,6 +213,10 @@ cmt status <name>
 cmt wait-status <name> <target>
 cmt wait-output <name> --match REGEX [--text]
 cmt whoami [--json]
+
+cmt enqueue <target> "msg" [--sender NAME] [--replies-to ID] [--json]
+cmt dequeue <agent> [--json]
+cmt inbox   <agent> [--clear] [--json]
 ```
 
 Outputs: human-readable by default; `--json` flag where structured output

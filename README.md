@@ -1,17 +1,15 @@
 # claude-multi-teams
 
-A multi-agent harness for Claude Code (and codex), running inside a terminal
-multiplexer. Spawn worker panes, hand them prompts, capture replies through
-their session jsonl, fan out to several reviewers in parallel, run impl ↔
-review loops, and visualize the call tree.
+A multi-agent harness for running **claude**, **codex**, and **agy**
+(Antigravity / Gemini) side by side as long-lived TUI workers inside a
+terminal multiplexer. The `cmt` CLI gives you 15 primitives — spawn,
+ask, kill, status, wait-status, capture, message-passing — and works
+identically in real **tmux** and in **`cmux claude-teams`** (which uses
+its native CLI under the hood).
 
-claude-multi-teams works in real **tmux** sessions and in **cmux** terminals when you
-launch your primary Claude Code via `cmux claude-teams` — cmux ships a tmux
-shim that translates the tmux CLI into its native surface API, so claude-multi-teams
-talks the same protocol in either environment. See "Multiplexer support" below.
-
-This plugin packages the `claude-multi-teams` skill — a single skill plus its bash
-runtime (`lib/`, `scripts/`).
+Built for the workflow where you want a second (or third) AI in the
+loop: an independent reviewer, a parallel investigator, a P2P
+discussion until consensus is reached.
 
 ## Installation
 
@@ -22,95 +20,128 @@ This repo is a Claude Code **marketplace** with one plugin (`claude-multi-teams`
 /plugin install claude-multi-teams@claude-multi-teams-marketplace
 ```
 
-For local development (before pushing changes), point at the working copy
-directly:
+For local development against the working copy:
 
 ```
 /plugin marketplace add /path/to/claude-multi-teams
 /plugin install claude-multi-teams@claude-multi-teams-marketplace
 ```
 
-## Skill
+## Quick start
 
-| Skill | What it does |
-|---|---|
-| `claude-multi-teams` | Spawn / ask / fan out / review against tmux-resident agents |
+From a tmux or `cmux claude-teams` session:
 
-After install, invoke from any Claude Code session inside tmux (or inside a
-`cmux claude-teams` session — see "Multiplexer support" below):
+```bash
+CMT=plugins/claude-multi-teams/skills/claude-multi-teams/bin/cmt
+
+$CMT spawn claude alice
+$CMT spawn codex  bob
+$CMT spawn agy    carol
+
+reply=$($CMT ask alice "review foo.py and flag the top issue")
+echo "$reply"
+
+$CMT kill --all
+```
+
+## The 15 primitives
+
+The 12 **foundation** ops (every workflow uses these):
 
 ```
-/claude-multi-teams ...
+cmt spawn <agent> <name> [--cwd DIR] [--replace]
+cmt kill  <name> | --all
+cmt list  [--json]
+
+cmt ask         <name> "prompt"          # send + wait-done + return reply
+cmt send        <name> "text" [--no-enter]
+cmt keys        <name> KEY [KEY ...]
+cmt capture     <name> [--mode visible|full|wrapped]
+cmt last-reply  <name>
+
+cmt status       <name>                  # working | done | blocked | dead
+cmt wait-status  <name> <target>
+cmt wait-output  <name> --match REGEX [--text]
+
+cmt whoami       [--json]                # called from inside an agent's pane
 ```
 
-See `skills/claude-multi-teams/SKILL.md` for the full surface.
+The 3 **actor-model extensions** for deadlock-proof P2P / consensus
+patterns:
 
-## Scripts (runtime)
+```
+cmt enqueue <target> "msg" [--sender NAME] [--replies-to ID]
+cmt dequeue <agent>
+cmt inbox   <agent> [--clear]
+```
 
-The skill drives bash scripts. Available manually if you need them outside
-the skill prompts:
+## Agents
 
-| Script | Purpose |
-|---|---|
-| `spawn.sh` | Create a pane with a named claude/codex worker |
-| `ask.sh` | Send a prompt and block until the worker replies |
-| `ask-skill.sh` | Like `ask.sh` but forces a real `/<skill>` slash invocation |
-| `ask-group.sh` | P2P discussion router (@mention based) until consensus / deadlock |
-| `review.sh` | impl ↔ N reviewers loop for a configurable number of rounds |
-| `last-reply.sh` | Recover the most recent reply from the session jsonl |
-| `list.sh` | Show all spawned workers + status |
-| `kill.sh` | Tear down a worker's pane and state |
-| `viewer.sh` | ASCII call tree from `flow.log` |
-| `viewer-html.sh` | Pretty browser view, optional `--watch` auto-refresh |
-| `viewer-md.sh` | Markdown view (intended to be pasted into a parent's reply) |
+| name   | CLI it drives             | response channel |
+|--------|---------------------------|------------------|
+| claude | Anthropic Claude Code CLI | per-session jsonl (`~/.claude/projects/.../<uuid>.jsonl`) |
+| codex  | OpenAI codex CLI          | rollout jsonl (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) — mtime-detected after first prompt |
+| agy    | Google Antigravity CLI    | `tmux capture-pane` — bottom status line + `> <prompt>` … `─{5,}` divider block |
 
-## Requirements
-
-- `bash` 3.2+ (macOS compatible)
-- a multiplexer environment — real **tmux** (`$TMUX` set) or a Claude Code
-  launched via **`cmux claude-teams`** (which provides a tmux-compatible shim)
-- `jq`, `python3`
-- `claude` CLI (Anthropic) and/or `codex` CLI (OpenAI) on `$PATH`
+All three launch with their respective skip-permissions flags. Each has
+a small spawn-time modal handler (Trust folder, etc.) — see
+[`docs/adr/0003`](docs/adr/0003-agy-screen-channel.md) and the
+per-agent specifics in [`CONTEXT.md`](CONTEXT.md).
 
 ## Multiplexer support
 
-claude-multi-teams drives panes through the tmux CLI in both supported environments:
+`cmt` autodetects which backend to use:
 
-- **Real tmux**: `lib/mux-tmux.sh` calls the real `tmux` server. Native paste
-  via `paste-buffer -p` (server-atomic bracketed paste).
-- **cmux claude-teams**: cmux's launcher installs a tmux shim
-  (`~/.cmuxterm/claude-teams-bin/tmux` → `cmux __tmux-compat`) that translates
-  the tmux CLI into cmux's surface API. The shim has no `load-buffer`, but
-  cmux's *native* CLI does: claude-multi-teams detects `$CMUX_SOCKET_PATH`
-  and routes its bracketed paste through `cmux set-buffer` + `cmux paste-buffer
-  --surface <uuid>` (cmux's paste implementation simulates bracketed paste
-  internally). The buffer name is per-pane, so repeated pastes overwrite a
-  single buffer instead of leaking one per call (cmux has no `delete-buffer`).
+- **Real tmux** (`$TMUX` set, not pointing at cmux's fake path): calls the
+  `tmux` CLI directly.
+- **cmux claude-teams** (`$TMUX` starts with `/tmp/cmux-claude-teams/` *or*
+  `$CMUX_SOCKET_PATH` is set, which is the case inside any cmux-spawned
+  pane): bypasses the tmux shim and calls the `cmux` native CLI
+  (`new-pane`, `paste-buffer`, `send-key`, `capture-pane`,
+  `close-surface`). Spawned panes appear as real surfaces in the cmux
+  sidebar.
 
-To use under cmux, launch your primary Claude with:
+Concurrent cmux calls are serialized via a host-wide flock on
+`/tmp/cmt-cmux.lock` to avoid races. See
+[`docs/adr/0002`](docs/adr/0002-mux-dual-backend.md) and
+[`docs/adr/0004`](docs/adr/0004-cmux-cli-serialization.md).
 
-```
-cmux claude-teams
-```
+## P2P safety
 
-For an isolated config dir (e.g. `claude-spare` workflow):
+A spawned agent can ask its siblings via `cmt ask <other>` from its own
+Bash tool. Two failure modes are blocked automatically:
 
-```
-CLAUDE_CONFIG_DIR=$HOME/.claude-spare cmux claude-teams
-```
+- **`CycleDetected`** — if a nested `cmt ask` would re-enter an agent
+  already in the calling chain. Prevents `A→B→A` style deadlocks at the
+  primitive level.
+- **`TargetBusy`** — atomic per-target mutex. Two concurrent calls
+  against the same agent: one wins, the other gets a clear error.
 
-`CLAUDE_*` / `ANTHROPIC_*` envs propagate to every spawned worker
-automatically.
+For long-running workflows where you want a structurally deadlock-proof
+pattern, use the actor extension (`enqueue` / `dequeue`) — agents never
+block on each other; a scheduler routes messages between inboxes one at
+a time. See [`docs/adr/0005`](docs/adr/0005-callchain-cycle-prevention.md)
+and [`docs/adr/0006`](docs/adr/0006-actor-inbox-primitives.md).
 
 ## State
 
-All harness state lives at `$ALPHAFORK_STATE_DIR` (default
-`~/.cache/claude-multi-teams`):
+All harness state lives at `$CMT_STATE_DIR` (default `~/.cache/cmt`):
 
-- `agents/<name>.json` — one file per spawned worker
-- `flow.log` — append-only call trace (jsonl)
-- `handoff/` — long prompts handed to codex via file
-- `flow.html` — viewer-html output (when used)
+```
+agents/<name>.json         # one file per spawned worker
+.calls/<target>.json       # per-target in-flight marker (sync P2P guard)
+.cmt-cmux.lock             # host-wide cmux CLI serialization (/tmp, not state)
+inbox/<agent>/<ts>.json    # actor-model message queue
+```
+
+Per-flow workspaces should set their own `CMT_STATE_DIR` to isolate.
+
+## Requirements
+
+- Python 3.10+
+- a multiplexer environment — real **tmux** (`$TMUX` set) or a Claude Code
+  launched via **`cmux claude-teams`**
+- the agent CLI(s) you intend to drive on `$PATH` (`claude`, `codex`, `agy`)
 
 ## License
 

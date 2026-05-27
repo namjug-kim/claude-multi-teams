@@ -1,6 +1,6 @@
 {
   "name": "claude-multi-teams",
-  "description": "Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes. Provides the `cmt` CLI with 12 foundation primitives (spawn, ask, kill, status, wait-*, capture, etc.) that work in both real tmux and cmux claude-teams.",
+  "description": "Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes. Provides the `cmt` CLI with 12 foundation primitives (spawn, ask, kill, status, wait-*, capture, etc.) plus 3 actor-model extensions (enqueue, dequeue, inbox) for deadlock-proof P2P and consensus flows. Works in both real tmux and cmux claude-teams.",
   "version": "0.1.0",
   "author": {
     "name": "namjug.kim"

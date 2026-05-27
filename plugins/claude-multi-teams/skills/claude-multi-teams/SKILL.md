@@ -1,6 +1,6 @@
 ---
 name: claude-multi-teams
-description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides 12 foundation primitives (spawn / kill / list / ask / send / keys / capture / last-reply / status / wait-status / wait-output / whoami) and works in both real tmux and `cmux claude-teams`.
+description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides 12 foundation primitives (spawn / kill / list / ask / send / keys / capture / last-reply / status / wait-status / wait-output / whoami) plus 3 actor-model extensions (enqueue / dequeue / inbox) for deadlock-proof P2P / consensus flows. Works in both real tmux and `cmux claude-teams`.
 allowed-tools: Bash
 ---
 
@@ -56,7 +56,10 @@ All three are launched with their respective permission-bypass flags so
 in-conversation tool prompts don't block automated asks. Spawn-time
 modals (Trust folder, etc.) are handled automatically.
 
-## The 12 primitives
+## The primitives
+
+**12 core ops** that every workflow uses, plus **3 actor-model extension ops**
+for non-blocking message-passing patterns:
 
 ```
 cmt spawn <agent> <name> [--cwd DIR] [--replace]
@@ -74,6 +77,11 @@ cmt wait-status  <name> <target>
 cmt wait-output  <name> --match REGEX [--text]
 
 cmt whoami       [--json]                # from inside a spawned pane → self lookup
+
+# Actor-model extension (deadlock-proof P2P / scheduler patterns)
+cmt enqueue <target> "msg" [--sender NAME] [--replies-to ID]   # fire-and-forget
+cmt dequeue <agent>                                            # atomic FIFO take
+cmt inbox   <agent> [--clear]                                  # peek / drain
 ```
 
 ### `cmt ask` is the main verb
@@ -110,6 +118,38 @@ wait
 
 cmt kill --all
 ```
+
+### P2P (agent-to-agent) and deadlock safety
+
+`cmt ask` from inside a spawned agent's Bash tool lets that agent call
+its siblings directly. Two failure modes are blocked automatically — you
+do not need to design around them:
+
+| error            | when it fires | what to do |
+|------------------|---------------|------------|
+| `CycleDetected`  | A asks B asks A — the second `cmt ask alice` is rejected because alice already appears in the calling chain | redesign the flow to be acyclic, or use actor pattern |
+| `TargetBusy`     | Two `cmt ask <X>` calls overlap for the same target | wait or retry; only one outstanding ask per agent |
+| `DepthExceeded`  | Chain length exceeds the default cap (6) | likely a runaway recursion — break the chain |
+
+For long-running or many-agent flows where the cycle guard is too
+restrictive, use the **actor pattern** instead — agents never call each
+other directly; a scheduler writes to inboxes:
+
+```bash
+# scheduler routes one message at a time, no agent blocks on another
+cmt enqueue alice "Topic: <something>. Reply with AGREE/DISAGREE/POSITION/INTENT."
+while true; do
+  for n in alice bob carol; do
+    msg=$(cmt dequeue $n --json 2>/dev/null) || continue
+    reply=$(cmt ask $n "$msg")
+    # fan reply out to other inboxes, append to transcript, etc.
+  done
+  # break when all inboxes empty
+done
+```
+
+This is the deadlock-proof pattern: the wait-for graph is empty by
+construction.
 
 ### `cmt whoami` — self-identification from inside an agent
 
