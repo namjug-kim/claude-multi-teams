@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "claude-multi-teams-marketplace",
-  "description": "Marketplace hosting the claude-multi-teams plugin — a tmux-based multi-agent harness for Claude Code / codex.",
+  "description": "Marketplace hosting the claude-multi-teams plugin — a tmux/cmux-based multi-agent harness for Claude Code, codex, and Antigravity (gemini).",
   "owner": {
     "name": "namjug.kim"
   },
@@ -9,7 +9,7 @@
     {
       "name": "claude-multi-teams",
       "source": "./plugins/claude-multi-teams",
-      "description": "Spawn tmux-resident claude/codex worker panes and orchestrate them: single ask, multi-turn, parallel fanout review, P2P discussion, impl-review loop. Includes call-tree viewers (ASCII / HTML / Markdown).",
+      "description": "Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. 12 foundation primitives (spawn / kill / list / ask / send / keys / capture / last-reply / status / wait-status / wait-output / whoami), real tmux and cmux claude-teams both supported.",
       "author": {
         "name": "namjug.kim"
       },
@@ -18,11 +18,11 @@
       "keywords": [
         "multi-agent",
         "tmux",
+        "cmux",
         "claude-code",
         "codex",
-        "review",
-        "orchestration",
-        "fanout"
+        "antigravity",
+        "orchestration"
       ]
     }
   ]

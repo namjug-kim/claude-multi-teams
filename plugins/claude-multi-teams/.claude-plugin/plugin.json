@@ -1,6 +1,6 @@
 {
   "name": "claude-multi-teams",
-  "description": "tmux-based multi-agent harness for Claude Code / codex. Spawn worker panes, ask them via stdin/stdout, fan out to multiple reviewers, run impl-review loops, and view the resulting call tree.",
+  "description": "Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes. Provides the `cmt` CLI with 12 foundation primitives (spawn, ask, kill, status, wait-*, capture, etc.) that work in both real tmux and cmux claude-teams.",
   "version": "0.1.0",
   "author": {
     "name": "namjug.kim"
@@ -8,11 +8,11 @@
   "keywords": [
     "multi-agent",
     "tmux",
+    "cmux",
     "claude-code",
     "codex",
-    "review",
-    "orchestration",
-    "fanout"
+    "antigravity",
+    "orchestration"
   ],
   "category": "development"
 }
