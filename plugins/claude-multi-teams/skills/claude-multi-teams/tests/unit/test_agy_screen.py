@@ -112,6 +112,31 @@ def test_extract_strips_box_drawing_artifacts() -> None:
     assert extract_response(_idle_screen(reply_block=block)) == "pong"
 
 
+def test_extract_skips_wrapped_prompt_lines_on_narrow_pane() -> None:
+    """On narrow agy panes the rendered prompt itself wraps onto several
+    indented continuation lines (same 2-space indent the response uses).
+    The extractor must use the blank line that follows the prompt as the
+    boundary, not the indent."""
+    divider = "─" * 18
+    screen = "\n".join([
+        divider,
+        "> TOPIC: Should",
+        "  refactoring be done",
+        "  in a separate PR",
+        "  feature?",                # last line of wrapped prompt
+        "",                          # blank — prompt/response boundary
+        "  Always isolate",          # response begins
+        "  refactoring into its",
+        "  own PR.",
+        "",
+        divider,
+        ">",
+        divider,
+        STATUS_DONE_MARKER,
+    ])
+    assert extract_response(screen) == "Always isolate\nrefactoring into its\nown PR."
+
+
 def test_extract_with_narrow_pane_dividers() -> None:
     """Narrow agy surfaces (side-pane, ~20-cols visible) render dividers as
     short dash runs. The extractor must still treat them as terminators."""

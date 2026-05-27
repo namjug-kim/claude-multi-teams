@@ -48,28 +48,46 @@ def status_from_screen(screen: str, pane_alive: bool) -> AgentStatus:
 
 def extract_response(screen: str) -> str:
     """Return the response text of the most recent rendered ``> <prompt>``
-    block in ``screen``. Blocks are bracketed by ``─{40,}`` divider lines.
+    block in ``screen``. Blocks are bracketed by ``─{5,}`` divider lines.
 
-    Returns "" if no block is found (e.g., fresh idle screen)."""
+    Layout inside a block (narrow and wide panes are the same shape, just
+    different widths):
+
+        > <first prompt line>
+          <prompt continuation lines, indented 2sp on wrap>
+                                    ← single blank line separates prompt and
+                                      response
+          <response lines, indented 2sp>
+                                    ← trailing blank before the divider
+
+    We find the latest ``> <text>`` line in scrollback, collect everything
+    until the next divider, then take the segment *after* the first blank
+    line. The leading 2-space indent is stripped; surrounding blank lines
+    are trimmed. Returns "" if no usable block is found.
+    """
     lines = screen.splitlines()
-    # Find the latest line that looks like a rendered user prompt.
     last_prompt_idx = -1
     for i, line in enumerate(lines):
         if _PROMPT_LINE.match(line):
             last_prompt_idx = i
     if last_prompt_idx < 0:
         return ""
-    # Collect lines after the prompt until the next divider.
-    body: list[str] = []
+
+    block: list[str] = []
     for line in lines[last_prompt_idx + 1:]:
         if _DIVIDER.match(line):
             break
-        body.append(line)
-    # Strip leading/trailing blanks and the 2-space agy indent.
-    stripped = [
-        (line[2:] if line.startswith("  ") else line)
-        for line in body
-    ]
+        block.append(line)
+
+    # Find the first blank line — that's the prompt/response boundary.
+    first_blank = -1
+    for i, line in enumerate(block):
+        if not line.strip():
+            first_blank = i
+            break
+    body = block[first_blank + 1:] if first_blank >= 0 else block
+
+    stripped = [(line[2:] if line.startswith("  ") else line) for line in body]
     while stripped and not stripped[0].strip():
         stripped.pop(0)
     while stripped and not stripped[-1].strip():
