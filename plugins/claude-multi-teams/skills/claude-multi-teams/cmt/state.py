@@ -21,6 +21,10 @@ class AgentState:
     started_at: str       # iso8601
     session_file: str | None = None   # claude/codex jsonl path; None for agy
     baseline_offset: int = 0          # bytes-into-jsonl when last ask began
+    # Spawn-time bookmark, interpreted per-agent. codex uses it to store the
+    # max-mtime of ~/.codex/sessions before spawn (as a float string) so the
+    # rollout file created after the first prompt can be located.
+    spawn_marker: str | None = None
 
 
 def validate_name(name: str) -> None:

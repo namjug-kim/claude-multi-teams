@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cmt import extract, state
+from cmt import agents, state
 
 
 def last_reply(name: str, state_dir: Path | None = None) -> str:
@@ -20,4 +20,7 @@ def last_reply(name: str, state_dir: Path | None = None) -> str:
     session = Path(s.session_file)
     if not session.exists():
         return ""
-    return extract.extract_jsonl_assistant(session, baseline_offset=s.baseline_offset)
+    spec = agents.AGENTS.get(s.agent)
+    if spec is None or spec.extract_response is None:
+        return ""
+    return spec.extract_response(session, baseline_offset=s.baseline_offset)

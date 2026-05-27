@@ -56,6 +56,12 @@ def spawn(
     ctx = agents.SpawnContext(name=name, agent_id=agent_id, cwd=cwd, session_uuid=session_uuid)
     argv = spec.build_argv(ctx)
 
+    # Capture spawn-time bookmark (e.g., codex max-mtime over sessions tree)
+    # BEFORE launching, so the new rollout file can be located later.
+    spawn_marker: str | None = None
+    if spec.pre_spawn_marker is not None:
+        spawn_marker = spec.pre_spawn_marker(ctx)
+
     env_vars: dict[str, str] = {"CMT_AGENT_ID": agent_id}
     # Framework-wide env that every spawned agent inherits so it can call
     # cmt back (e.g. for `cmt whoami` from inside the agent's Bash tool).
@@ -71,6 +77,10 @@ def spawn(
     pane_id = mux.split_pane(parent, cwd, cmd, env_vars)
     session_file = spec.session_file(ctx, env_vars)
 
+    # Run agent-specific spawn-time warmup (e.g., codex Trust-folder modal).
+    if spec.post_spawn_warmup is not None:
+        spec.post_spawn_warmup(ctx, pane_id)
+
     s = state.AgentState(
         name=name,
         agent=agent,
@@ -80,6 +90,7 @@ def spawn(
         started_at=_dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         session_file=session_file,
         baseline_offset=0,
+        spawn_marker=spawn_marker,
     )
     state.save(s, state_dir=state_dir)
     return s

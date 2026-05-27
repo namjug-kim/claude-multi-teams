@@ -43,3 +43,36 @@ def extract_jsonl_assistant(jsonl_path: Path, baseline_offset: int = 0) -> str:
                 if isinstance(block, dict) and block.get("type") == "text":
                     parts.append(block.get("text", ""))
     return "".join(parts).strip()
+
+
+def extract_codex_response(jsonl_path: Path, baseline_offset: int = 0) -> str:
+    """Return concatenation of all ``agent_message`` texts at/after
+    ``baseline_offset`` from a codex rollout jsonl.
+
+    Codex events under ``type=event_msg`` carry a ``payload.type`` tag.
+    ``agent_message`` payloads have a ``message`` string field. We walk all
+    such events and concatenate — matching the claude extractor's "join all
+    assistant text" shape. ``task_complete.last_agent_message`` duplicates
+    the final text but we don't read it directly; the agent_message stream
+    is the authoritative full text.
+    """
+    parts: list[str] = []
+    with open(jsonl_path) as f:
+        f.seek(baseline_offset)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "event_msg":
+                continue
+            payload = event.get("payload") or {}
+            if payload.get("type") != "agent_message":
+                continue
+            msg = payload.get("message")
+            if isinstance(msg, str):
+                parts.append(msg)
+    return "".join(parts).strip()

@@ -61,6 +61,71 @@ def tmux_server(monkeypatch):
 
 
 @pytest.fixture
+def fake_codex(tmp_path: Path, monkeypatch):
+    """Install a fake codex binary and a sandboxed ``CODEX_HOME``.
+
+    The fake immediately prints the "OpenAI Codex" banner (so the spawn-time
+    warmup state machine exits without sending any modal keys), then reads
+    pasted prompt lines from stdin (stripping bracketed-paste markers). For
+    each prompt it writes one rollout jsonl file in ``$CODEX_HOME/sessions/
+    YYYY/MM/DD/rollout-<uuid>.jsonl`` containing:
+
+      - event_msg/task_started
+      - event_msg/user_message    (echo of prompt)
+      - event_msg/agent_message   (reply text "echo: <prompt>")
+      - event_msg/task_complete   (last_agent_message = the same reply)
+
+    Returns a dict with ``bin`` (Path to the fake) and ``home`` (Path to the
+    sandboxed CODEX_HOME).
+    """
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    script = tmp_path / "fake-codex"
+    script.write_text(r'''#!/usr/bin/env python3
+import datetime, json, os, re, sys, uuid
+
+# Eat the bypass flags (we don't actually need them for our fake)
+for _ in range(len(sys.argv) - 1):
+    arg = sys.argv.pop()
+    if arg.startswith("--"):
+        continue
+
+home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+sessions_root = os.path.join(home, "sessions")
+
+# Print banner so post_spawn_warmup sees "OpenAI Codex" and returns immediately.
+print("OpenAI Codex (v0.0.0-fake)", flush=True)
+
+bp_re = re.compile(rb"\x1b\[2(00|01)~")
+rollout_path = None  # created on first prompt; same file across all turns
+
+for line in sys.stdin.buffer:
+    cleaned = bp_re.sub(b"", line).decode("utf-8", "replace").strip()
+    if not cleaned:
+        continue
+    if rollout_path is None:
+        now = datetime.datetime.utcnow()
+        day_dir = os.path.join(sessions_root, f"{now.year}", f"{now.month:02d}", f"{now.day:02d}")
+        os.makedirs(day_dir, exist_ok=True)
+        fname = f"rollout-{now.strftime('%Y-%m-%dT%H-%M-%S')}-{uuid.uuid4().hex}.jsonl"
+        rollout_path = os.path.join(day_dir, fname)
+    reply = f"echo: {cleaned}"
+    with open(rollout_path, "a") as f:
+        def emit(payload):
+            f.write(json.dumps({"type": "event_msg", "payload": payload}) + "\n")
+        emit({"type": "task_started"})
+        emit({"type": "user_message", "message": cleaned})
+        emit({"type": "agent_message", "message": reply})
+        emit({"type": "task_complete", "last_agent_message": reply})
+    print(reply, flush=True)
+''')
+    script.chmod(0o755)
+    monkeypatch.setenv("CMT_CODEX_BIN", str(script))
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    return {"bin": script, "home": home}
+
+
+@pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch):
     """Install a fake claude binary and point ``CMT_CLAUDE_BIN`` at it.
 

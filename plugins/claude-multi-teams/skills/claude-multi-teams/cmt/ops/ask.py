@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from cmt import extract, mux, state, strategies
+from cmt import agents, mux, state
 
 
 def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
@@ -22,29 +22,49 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
     if not mux.pane_alive(s.pane_id):
         raise RuntimeError(f"agent {name!r} pane {s.pane_id} is dead.")
 
-    if s.session_file is None:
-        # agy slice will replace this with capture-pane strategy; foundation
-        # phase 1 covers claude only.
+    spec = agents.AGENTS.get(s.agent)
+    if spec is None or spec.await_done is None or spec.extract_response is None:
         raise NotImplementedError(
-            f"agent {s.agent!r} has no jsonl session_file; "
-            "capture-pane strategy not in this slice."
+            f"agent {s.agent!r}: no jsonl/extract strategy registered "
+            "(capture-pane strategy not in this slice)."
         )
 
+    # Branch on whether the session file is already known. claude knows it
+    # at spawn; codex resolves it on the first ask (after sending the prompt
+    # so codex actually writes a rollout file).
+    if s.session_file is None:
+        if spec.resolve_session_file is None:
+            raise NotImplementedError(
+                f"agent {s.agent!r}: session_file is None and no resolver registered"
+            )
+        # codex path: send first, then wait for rollout file
+        mux.send_text(s.pane_id, prompt)
+        ctx = agents.SpawnContext(
+            name=s.name, agent_id=s.agent_id, cwd=s.cwd, session_uuid="",
+        )
+        new_session = spec.resolve_session_file(ctx, s.spawn_marker)
+        if new_session is None:
+            raise RuntimeError(
+                f"agent {s.agent!r} {name!r}: session file did not appear after first prompt"
+            )
+        s = dataclasses.replace(s, session_file=new_session, baseline_offset=0)
+        state.save(s, state_dir=state_dir)
+    else:
+        session_file = Path(s.session_file)
+        baseline = session_file.stat().st_size if session_file.exists() else 0
+        s = dataclasses.replace(s, baseline_offset=baseline)
+        # Persist baseline BEFORE sending so `last-reply` and `status` can find
+        # the start of this turn even if we crash mid-ask.
+        state.save(s, state_dir=state_dir)
+        mux.send_text(s.pane_id, prompt)
+
     session_file = Path(s.session_file)
-    baseline = session_file.stat().st_size if session_file.exists() else 0
-
-    # Persist baseline BEFORE sending so `last-reply` and `status` can find
-    # the start of this turn even if we crash mid-ask.
-    state.save(dataclasses.replace(s, baseline_offset=baseline), state_dir=state_dir)
-
-    mux.send_text(s.pane_id, prompt)
-
-    result = strategies.await_jsonl_done(
+    result = spec.await_done(
         session_file,
-        baseline_offset=baseline,
+        baseline_offset=s.baseline_offset,
         is_alive=lambda: mux.pane_alive(s.pane_id),
     )
     if result == "dead":
         raise RuntimeError(f"agent {name!r} died during ask")
 
-    return extract.extract_jsonl_assistant(session_file, baseline_offset=baseline)
+    return spec.extract_response(session_file, baseline_offset=s.baseline_offset)

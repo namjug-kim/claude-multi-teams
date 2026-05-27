@@ -113,3 +113,78 @@ def status_jsonl(
     if last_stop in _TERMINAL_STOP_REASONS:
         return "done"
     return "working" if saw_event else "done"
+
+
+# Codex rollout-file strategy. Codex emits events under ``type=event_msg`` with
+# a ``payload.type`` discriminator. ``task_complete`` is the terminal marker.
+def _scan_codex(jsonl_path: Path, baseline_offset: int) -> tuple[bool, bool]:
+    """Return ``(saw_any_event, saw_task_complete)`` for events after offset.
+
+    Tolerates the file not existing yet (codex creates it only on the first
+    prompt) and malformed/partial lines (concurrent writes).
+    """
+    saw_event = False
+    saw_complete = False
+    try:
+        with open(jsonl_path) as f:
+            f.seek(baseline_offset)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "event_msg":
+                    continue
+                saw_event = True
+                payload = event.get("payload") or {}
+                if payload.get("type") == "task_complete":
+                    saw_complete = True
+    except FileNotFoundError:
+        pass
+    return saw_event, saw_complete
+
+
+def await_codex_done(
+    jsonl_path: Path,
+    baseline_offset: int,
+    is_alive: Callable[[], bool],
+    poll_interval: float = 0.5,
+) -> AskResult:
+    """Poll ``jsonl_path`` until a ``task_complete`` event appears after
+    ``baseline_offset``. Returns ``"done"`` or ``"dead"`` (mirrors
+    ``await_jsonl_done`` for claude). No wall-clock or idle timeout."""
+    while True:
+        if not is_alive():
+            return "dead"
+        _, complete = _scan_codex(jsonl_path, baseline_offset)
+        if complete:
+            return "done"
+        time.sleep(poll_interval)
+
+
+def status_codex(
+    jsonl_path: Path,
+    baseline_offset: int,
+    pane_alive: bool,
+) -> AgentStatus:
+    """One-shot status read from codex rollout. Mirrors ``status_jsonl`` shape:
+    pane gone → dead; no file / no new bytes → done; events but no
+    task_complete → working; task_complete present → done.
+    """
+    if not pane_alive:
+        return "dead"
+    if not jsonl_path.exists():
+        return "done"
+    try:
+        size = jsonl_path.stat().st_size
+    except FileNotFoundError:
+        return "done"
+    if size <= baseline_offset:
+        return "done"
+    saw_event, complete = _scan_codex(jsonl_path, baseline_offset)
+    if complete:
+        return "done"
+    return "working" if saw_event else "done"

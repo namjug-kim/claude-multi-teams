@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cmt import mux, state, strategies
+from cmt import agents, mux, state, strategies
 
 
 def status(name: str, state_dir: Path | None = None) -> strategies.AgentStatus:
@@ -17,9 +17,14 @@ def status(name: str, state_dir: Path | None = None) -> strategies.AgentStatus:
         return "dead"
     pane_alive = mux.pane_alive(s.pane_id)
     if s.session_file is None:
-        # agy-style (no jsonl) — capture-pane strategy ships in a later slice.
+        # No session yet (codex pre-first-ask, or agy-style w/o jsonl) —
+        # report based on pane liveness alone.
         return "done" if pane_alive else "dead"
-    return strategies.status_jsonl(
+    spec = agents.AGENTS.get(s.agent)
+    if spec is None or spec.status_fn is None:
+        # Unknown agent: degrade gracefully.
+        return "done" if pane_alive else "dead"
+    return spec.status_fn(
         Path(s.session_file),
         baseline_offset=s.baseline_offset,
         pane_alive=pane_alive,
