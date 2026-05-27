@@ -21,8 +21,13 @@ from cmt.strategies import AgentStatus, AskResult
 STATUS_DONE_MARKER = "? for shortcuts"
 STATUS_WORKING_MARKER = "esc to cancel"
 
-# A run of ─ (or - fallback) of 40+ chars marks a turn boundary.
-_DIVIDER = re.compile(r"^[─\-]{40,}\s*$")
+# A line consisting only of ─ (or - fallback) characters marks a turn
+# boundary. agy renders this divider at the pane's visible width, so the
+# length varies — narrow side-pane surfaces show only ~18 chars, full-width
+# panes show 150+. The threshold (5) is high enough to skip ordinary content
+# like ``---`` separators in markdown while still catching the narrowest
+# real-world divider observed.
+_DIVIDER = re.compile(r"^[─\-]{5,}\s*$")
 # A "> <something non-blank>" line in scrollback is a rendered user prompt.
 # Pure ">" with no content after is the current input area and should be ignored.
 _PROMPT_LINE = re.compile(r"^>\s+\S")

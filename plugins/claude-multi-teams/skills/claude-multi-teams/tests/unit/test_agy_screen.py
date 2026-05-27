@@ -112,6 +112,23 @@ def test_extract_strips_box_drawing_artifacts() -> None:
     assert extract_response(_idle_screen(reply_block=block)) == "pong"
 
 
+def test_extract_with_narrow_pane_dividers() -> None:
+    """Narrow agy surfaces (side-pane, ~20-cols visible) render dividers as
+    short dash runs. The extractor must still treat them as terminators."""
+    screen = "\n".join([
+        "─" * 18,        # ← narrow divider (18 chars)
+        "> Reply GAMMA",
+        "",
+        "  GAMMA",
+        "",
+        "─" * 21,        # ← narrow divider (21 chars)
+        ">",
+        "─" * 21,
+        STATUS_DONE_MARKER,
+    ])
+    assert extract_response(screen) == "GAMMA"
+
+
 def test_await_done_returns_done_when_status_already_done() -> None:
     screens = iter([_idle_screen()])
     result = await_done(

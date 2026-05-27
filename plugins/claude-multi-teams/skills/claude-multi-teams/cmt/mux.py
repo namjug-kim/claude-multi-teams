@@ -105,16 +105,33 @@ def _tmux_list_panes() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+_CMUX_LOCK_PATH = "/tmp/cmt-cmux.lock"
+
+
 def _cmux(*args: str, check: bool = True, capture: bool = True,
           stdout=None) -> subprocess.CompletedProcess:
+    """Run a ``cmux`` CLI command.
+
+    Concurrent invocations of the cmux CLI from sibling cmt processes
+    (parallel asks across multiple agents) race against shared state and
+    fail intermittently. We serialize them with a host-wide fcntl lock on
+    ``/tmp/cmt-cmux.lock``. The lock is per-call (held only for the
+    subprocess), so it doesn't block long-running cmux operations on
+    unrelated panes."""
+    import fcntl
     kwargs: dict = {"check": check, "text": True}
     if stdout is not None:
-        # caller wants stdout discarded or redirected — keep stderr captured
         kwargs["stdout"] = stdout
         kwargs["stderr"] = subprocess.PIPE
     elif capture:
         kwargs["capture_output"] = True
-    return subprocess.run(["cmux", *args], **kwargs)
+    lock_fd = os.open(_CMUX_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return subprocess.run(["cmux", *args], **kwargs)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, str]) -> str:
