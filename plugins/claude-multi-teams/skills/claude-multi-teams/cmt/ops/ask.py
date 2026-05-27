@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from cmt import agents, mux, state
+from cmt import agents, callchain, mux, state
 
 
 def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
@@ -39,6 +39,15 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
             f"agent {s.agent!r}: no done/extract strategy registered."
         )
 
+    sd = state_dir if state_dir is not None else state.default_dir()
+    callchain.acquire(name, sd)
+    try:
+        return _ask_inner(name, prompt, s, spec, state_dir)
+    finally:
+        callchain.release(name, sd)
+
+
+def _ask_inner(name, prompt, s, spec, state_dir):
     if s.session_file is None and spec.resolve_session_file is not None:
         # codex first-ask: prompt must hit the agent before the rollout file
         # appears. Then resolve, then persist.

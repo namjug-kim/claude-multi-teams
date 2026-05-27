@@ -8,8 +8,11 @@ import json
 import sys
 from pathlib import Path
 
+from cmt import inbox as inbox_mod
 from cmt.ops import ask as ask_op
 from cmt.ops import capture as capture_op
+from cmt.ops import dequeue as dequeue_op
+from cmt.ops import enqueue as enqueue_op
 from cmt.ops import keys as keys_op
 from cmt.ops import kill as kill_op
 from cmt.ops import last_reply as last_reply_op
@@ -106,6 +109,54 @@ def _cmd_whoami(args) -> int:
     return 0
 
 
+def _cmd_enqueue(args) -> int:
+    msg = enqueue_op.enqueue(
+        args.target,
+        _read_prompt(args.content),
+        sender=args.sender or "",
+        replies_to=args.replies_to,
+    )
+    if args.json:
+        print(json.dumps(dataclasses.asdict(msg)))
+    else:
+        print(msg.msg_id)
+    return 0
+
+
+def _cmd_dequeue(args) -> int:
+    msg = dequeue_op.dequeue(args.agent)
+    if msg is None:
+        return 1  # empty inbox
+    if args.json:
+        print(json.dumps(dataclasses.asdict(msg)))
+    else:
+        # Plain-text mode: just the content, for easy piping
+        sys.stdout.write(msg.content)
+        if not msg.content.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_inbox(args) -> int:
+    from cmt import state as _state
+    sd = _state.default_dir()
+    if args.clear:
+        n = inbox_mod.clear(sd, args.agent)
+        print(f"cleared {n} messages")
+        return 0
+    msgs = inbox_mod.peek(sd, args.agent)
+    if args.json:
+        print(json.dumps([dataclasses.asdict(m) for m in msgs], indent=2))
+        return 0
+    if not msgs:
+        print("(empty)")
+        return 0
+    for m in msgs:
+        sender = m.sender or "(orchestrator)"
+        print(f"[{m.ts}] from={sender} -> {m.to}: {m.content[:80]}")
+    return 0
+
+
 def _cmd_list(args) -> int:
     agents = list_op.list_agents()
     if args.json:
@@ -183,6 +234,27 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("list", help="enumerate tracked agents")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=_cmd_list)
+
+    sp = sub.add_parser("enqueue", help="(actor) write a message to an agent's inbox")
+    sp.add_argument("target")
+    sp.add_argument("content", help="message text; @file or - for stdin")
+    sp.add_argument("--sender", default=None,
+                    help="sender name (orchestrator if omitted)")
+    sp.add_argument("--replies-to", default=None, dest="replies_to",
+                    help="msg_id this is a reply to")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_enqueue)
+
+    sp = sub.add_parser("dequeue", help="(actor) atomically take the oldest inbox message")
+    sp.add_argument("agent")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_dequeue)
+
+    sp = sub.add_parser("inbox", help="(actor) peek or clear an agent's inbox")
+    sp.add_argument("agent")
+    sp.add_argument("--clear", action="store_true")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_inbox)
 
     return p
 
