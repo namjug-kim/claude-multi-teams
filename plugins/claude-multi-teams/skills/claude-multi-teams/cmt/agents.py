@@ -64,7 +64,12 @@ def _claude_argv(ctx: SpawnContext) -> list[str]:
 def _claude_session_file(ctx: SpawnContext, env: dict[str, str]) -> str:
     base = env.get("CLAUDE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR") \
         or str(Path.home() / ".claude")
-    cwd_dashed = ctx.cwd.replace("/", "-")
+    # Claude derives its project-dir slug from the *canonical* cwd: a pane
+    # started in /tmp/x reports getcwd() as /private/tmp/x on macOS, so the
+    # jsonl lands under "-private-tmp-x". Match that by resolving symlinks
+    # here — otherwise we track a path that never grows and every turn looks
+    # like it "never started".
+    cwd_dashed = os.path.realpath(ctx.cwd).replace("/", "-")
     return f"{base}/projects/{cwd_dashed}/{ctx.session_uuid}.jsonl"
 
 
