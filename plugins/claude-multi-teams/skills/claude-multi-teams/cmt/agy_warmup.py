@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from cmt.agy_screen import STATUS_DONE_MARKER
+from cmt.agy_screen import STATUS_DONE_MARKER, SURVEY_DISMISS_KEYS, SURVEY_MARKER
 
 # Trust-folder modal: "Do you trust the contents of this project?"
 # Default selection is "Yes, I trust this folder" — just press Enter.
@@ -30,6 +30,7 @@ class _Modal:
 
 _MODALS: tuple[_Modal, ...] = (
     _Modal(key="trust", marker=TRUST_MODAL_MARKER, keys=("Enter",)),
+    _Modal(key="survey", marker=SURVEY_MARKER, keys=SURVEY_DISMISS_KEYS),
 )
 
 

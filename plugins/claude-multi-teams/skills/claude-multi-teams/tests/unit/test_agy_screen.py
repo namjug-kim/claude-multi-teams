@@ -196,3 +196,59 @@ def test_await_done_returns_dead_when_is_alive_false() -> None:
         poll_interval=0.05,
     )
     assert result == "dead"
+
+
+def _survey_screen() -> str:
+    """Screen showing the post-turn telemetry survey. Status line still
+    says 'esc to cancel' because the modal is up."""
+    return "\n".join([
+        "> some prompt",
+        "",
+        "  some reply",
+        "",
+        "How's the CLI experience so far? Help us improve:",
+        "[1] Good   [2] Fine   [3] Bad   [0] Skip",
+        f"{STATUS_WORKING_MARKER}                                  Gemini",
+    ])
+
+
+def test_await_done_auto_dismisses_survey_modal() -> None:
+    """When agy interrupts a finished turn with the telemetry survey, the
+    framework must skip it automatically (it'd otherwise hang forever — the
+    status line stays at 'esc to cancel' until the modal is dismissed)."""
+    state = {"phase": "survey"}
+    sent: list[tuple[str, ...]] = []
+
+    def cap() -> str:
+        return _survey_screen() if state["phase"] == "survey" else _idle_screen()
+
+    def send_keys(*keys: str) -> None:
+        sent.append(keys)
+        state["phase"] = "done"
+
+    result = await_done(
+        capture=cap,
+        is_alive=lambda: True,
+        send_keys=send_keys,
+        poll_interval=0.01,
+    )
+    assert result == "done"
+    assert sent == [("0", "Enter")]
+
+
+def test_await_done_without_send_keys_does_not_skip_survey() -> None:
+    """If a caller didn't pass send_keys, await_done must NOT attempt to
+    send anything — and naturally it'll never return done while the survey
+    is up. is_alive=False breaks the loop so the test terminates."""
+    n = {"i": 0}
+
+    def alive() -> bool:
+        n["i"] += 1
+        return n["i"] < 3
+
+    result = await_done(
+        capture=lambda: _survey_screen(),
+        is_alive=alive,
+        poll_interval=0.01,
+    )
+    assert result == "dead"

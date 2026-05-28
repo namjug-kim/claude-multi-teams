@@ -21,6 +21,15 @@ from cmt.strategies import AgentStatus, AskResult
 STATUS_DONE_MARKER = "? for shortcuts"
 STATUS_WORKING_MARKER = "esc to cancel"
 
+# Mid-session telemetry prompt — agy occasionally interrupts a finished turn
+# with "How's the CLI experience so far? Help us improve: [1] Good [2] Fine
+# [3] Bad [0] Skip". The status line stays at ``esc to cancel`` while the
+# modal is up, so the turn never naturally completes. We send "0\n" (Skip)
+# the first time we see it. Permission-skip flags already imply auto-handle
+# for non-security UX; a feedback survey qualifies.
+SURVEY_MARKER = "Help us improve"
+SURVEY_DISMISS_KEYS = ("0", "Enter")
+
 # A line consisting only of ─ (or - fallback) characters marks a turn
 # boundary. agy renders this divider at the pane's visible width, so the
 # length varies — narrow side-pane surfaces show only ~18 chars, full-width
@@ -98,16 +107,26 @@ def extract_response(screen: str) -> str:
 def await_done(
     capture: Callable[[], str],
     is_alive: Callable[[], bool],
+    send_keys: Callable[..., None] | None = None,
     poll_interval: float = 0.5,
 ) -> AskResult:
     """Poll ``capture()`` until the bottom status line shows
     ``? for shortcuts`` (idle). Returns ``"done"`` or ``"dead"``.
 
+    If ``send_keys`` is provided and a survey modal interrupts the turn,
+    auto-dismiss it (``0`` + ``Enter``) and continue polling.
+
     No wall-clock timeout (mirrors the jsonl strategy contract)."""
+    survey_handled = False
     while True:
         if not is_alive():
             return "dead"
         screen = capture()
         if STATUS_DONE_MARKER in screen and STATUS_WORKING_MARKER not in screen:
             return "done"
+        if send_keys is not None and SURVEY_MARKER in screen and not survey_handled:
+            send_keys(*SURVEY_DISMISS_KEYS)
+            survey_handled = True
+        elif SURVEY_MARKER not in screen:
+            survey_handled = False
         time.sleep(poll_interval)

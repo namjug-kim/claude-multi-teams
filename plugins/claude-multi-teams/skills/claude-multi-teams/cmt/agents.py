@@ -174,6 +174,7 @@ def _build_agents() -> dict[str, AgentSpec]:
         return _agy_screen.await_done(
             capture=lambda: _mux.capture(state.pane_id, mode="full"),
             is_alive=is_alive,
+            send_keys=lambda *keys: _mux.send_keys(state.pane_id, *keys),
         )
 
     def _agy_status(state, pane_alive):
