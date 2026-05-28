@@ -48,6 +48,16 @@ prompting), and record bookkeeping needed to drive it later.
 
 A single turn: send text to an agent and recover the agent's reply.
 
+## Role
+
+An agent's stable identity. A **workflow-layer** concept: the raw `cmt ask`
+sends prompts verbatim, while `cmt wf ask` looks up the agent's Role and
+prepends an identity prelude. It exists so an agent cannot drift out of its
+assigned stance across turns (the failure where a "pro-monorepo" agent
+started arguing the opposite). The Role is the _only_ context the workflow
+layer injects on its own; everything else a workflow wants an agent to see
+it must put in the prompt itself (see _Passive store / active flow_).
+
 ## Response retrieval channel
 
 How an agent's reply is recovered from its pane. Per-agent:
@@ -81,10 +91,17 @@ CLI dependency.
 
 ## Foundation primitives (v1 surface)
 
-The foundation exposes exactly the operations below — **12 core** primitives
-that every workflow uses, plus **3 actor-model extension** primitives added
-when multi-agent P2P / consensus patterns came online. Additions to either
-set require explicit grill.
+Two layers share one `cmt` binary:
+
+- **Raw layer** (`cmt <verb>`) — pure agent manipulation. The **12 core**
+  primitives below. `cmt ask` sends a prompt verbatim and blocks until the
+  turn is done; it injects nothing.
+- **Workflow layer** (`cmt wf <verb>`) — multi-agent composition: **role**,
+  **kv**, **transcript**, the **actor extension** (enqueue / dequeue /
+  inbox), and a role-aware **ask** wrapper. See _Passive store / active
+  flow_ and _Shared stores_.
+
+Additions to either layer require explicit grill.
 
 ### Lifecycle
 
@@ -128,13 +145,21 @@ set require explicit grill.
 |---|---|
 | `whoami` | when invoked from inside a spawned pane, resolve `$CMT_AGENT_ID` → state file → return that agent's own metadata. Lets a spawned agent identify itself and reach sibling agents. |
 
-### Actor-model extension (added 2026-05-27 for P2P / consensus)
+### Workflow layer (`cmt wf …`)
+
+Multi-agent composition on top of the raw primitives. The actor extension
+(added 2026-05-27 for P2P / consensus) lives here alongside role, kv, and
+transcript:
 
 | op | role |
 |---|---|
-| `enqueue` | fire-and-forget write to an agent's inbox at `$STATE_DIR/inbox/<agent>/<ts>-<uuid>.json`. Returns immediately. Used by a scheduler to deliver one-way messages without blocking. |
-| `dequeue` | atomically take the oldest pending inbox message for an agent (FIFO by ts prefix; `rename` to claim). Returns nothing when empty (rc=1). |
-| `inbox` | peek or `--clear` an agent's inbox. Diagnostic / scheduler aid. |
+| `wf role set/get` | assign / read an agent's **Role**, stored at `$STATE_DIR/workflow/roles/<agent>`. |
+| `wf ask` | look up the agent's Role, prepend an identity prelude, then delegate to raw `ask`. |
+| `wf put` / `wf get` | **KV**: current world state, one value per key under `$STATE_DIR/kv/<key>`. |
+| `wf log append/tail` | **Transcript**: append-only history per topic at `$STATE_DIR/transcript/<topic>.jsonl`. |
+| `wf enqueue` | fire-and-forget write to an agent's inbox at `$STATE_DIR/inbox/<agent>/<ts>-<uuid>.json`. Returns immediately. |
+| `wf dequeue` | atomically take the oldest pending inbox message for an agent (FIFO by ts prefix; `rename` to claim). Returns nothing when empty (rc=1). |
+| `wf inbox` | peek or `--clear` an agent's inbox. Diagnostic / scheduler aid. |
 
 `ask` and the actor ops solve different problems: `ask` is the natural
 "please answer this now" verb and blocks until the agent responds, with
@@ -198,13 +223,15 @@ the response, using `send-keys` to drive the modal explicitly.
 
 ## CLI surface
 
-Single binary `cmt`. Subcommand tree, one verb per primitive op:
+Single binary `cmt`, two namespaces — raw verbs at top level, workflow
+verbs under `cmt wf`:
 
 ```
+# raw layer — pure agent manipulation
 cmt spawn <agent> <name> [--cwd DIR] [--replace]
 cmt kill <name> | --all
 cmt list [--json]
-cmt ask <name> "prompt" | @file | -
+cmt ask <name> "prompt" | @file | -      # sends verbatim
 cmt send <name> "text" [--no-enter]
 cmt keys <name> KEY [KEY ...]
 cmt capture <name> [--mode visible|full|wrapped]
@@ -214,9 +241,17 @@ cmt wait-status <name> <target>
 cmt wait-output <name> --match REGEX [--text]
 cmt whoami [--json]
 
-cmt enqueue <target> "msg" [--sender NAME] [--replies-to ID] [--json]
-cmt dequeue <agent> [--json]
-cmt inbox   <agent> [--clear] [--json]
+# workflow layer — multi-agent composition
+cmt wf role set <name> "role" | @file | -
+cmt wf role get <name>
+cmt wf ask <name> "prompt" | @file | -    # prepends role, then raw ask
+cmt wf put <key> "value" | @file | -
+cmt wf get <key>
+cmt wf log append <topic> "text" [--from NAME]
+cmt wf log tail <topic> [--n N] [--json]
+cmt wf enqueue <target> "msg" [--sender NAME] [--replies-to ID] [--json]
+cmt wf dequeue <agent> [--json]
+cmt wf inbox   <agent> [--clear] [--json]
 ```
 
 Outputs: human-readable by default; `--json` flag where structured output
@@ -262,7 +297,7 @@ layer, and the framework prefers to wait rather than guess.
   agent state via mux capture + jsonl tail, not by binding to agent
   internals.
 
-## Workflow (forward reference — not in foundation scope)
+## Workflow
 
 A bounded multi-agent run with a clear start and end. Examples:
 
@@ -270,12 +305,40 @@ A bounded multi-agent run with a clear start and end. Examples:
 - 1 implementer + 1 reviewer + 1 tester cycling until a feature is shipped
   (long workflow — possibly days or weeks)
 
-Each workflow is one logical "flow". When the workflow phase is designed
-it will introduce the flow concept: how a flow is named, where its
-events live, how spawned sibling agents inherit the flow id, how a flow
-ends. Foundation phase ships none of this; it only ships the agent
-primitives a workflow would call into.
+A workflow is **active flow**: the script decides what context moves
+where. It reads from the shared stores, embeds that context into a
+prompt, asks an agent, and writes the result back to the stores. The
+substrate never routes context on its own (see _Passive store / active
+flow_).
 
-Specifically: foundation does **not** write any cross-call observability
-log. There is no `flow.log` or events file under `~/.cache/cmt/`.
-Per-flow logging is a workflow concern.
+## Passive store / active flow
+
+The dividing principle between substrate and workflow.
+
+**Passive store** — the substrate. It holds things and guarantees their
+integrity (locks, durable replies, identity, the shared stores) but
+routes nothing by itself. A `cmt ask` auto-prepends only the agent's
+own **Role** and workflow id (identity stabilisation); it never
+auto-injects history or world state.
+
+**Active flow** — the workflow script. Every phase is the same shape:
+1. **pull** inputs from the shared stores (`get` / `log tail` / `dequeue`),
+2. **delegate** via `ask` with those inputs embedded in the prompt,
+3. **push** the result back to the stores (`log append` / `put` / `event emit`).
+
+The split exists so every context movement is visible in shell, not
+hidden behind subscription magic — magic makes a routing bug (e.g. an
+agent shown the wrong peer's words) invisible.
+
+## Shared stores
+
+The workflow-visible state a workflow script reads and writes. Four
+shapes, each a different need:
+
+- **KV** — current world state, one value per key, compare-and-set. "What is true now?"
+- **Transcript** — append-only history per topic, never consumed. "How did we get here?"
+- **Inbox** — point-to-point FIFO, consumed once on take. Actor message passing.
+- **Events** — phase triggers; a waiter wakes when a topic is emitted.
+
+Never collapse them: each answers a distinct question, and merging them
+creates accidental semantics.

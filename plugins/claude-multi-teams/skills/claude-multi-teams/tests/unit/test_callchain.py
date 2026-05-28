@@ -28,7 +28,7 @@ def test_acquire_from_orchestrator_writes_single_step_chain(tmp_path: Path) -> N
     callchain.acquire("alice", state_dir=tmp_path)
     chain_file = tmp_path / ".calls" / "alice.json"
     assert chain_file.exists()
-    assert json.loads(chain_file.read_text()) == ["alice"]
+    assert json.loads(chain_file.read_text())["chain"] == ["alice"]
 
 
 def test_release_clears_in_flight_marker(tmp_path: Path) -> None:
@@ -52,7 +52,7 @@ def test_nested_call_extends_chain(tmp_path: Path, monkeypatch) -> None:
     callchain.acquire("alice", state_dir=tmp_path)
     monkeypatch.setenv("CMT_AGENT_ID", "id-alice")
     callchain.acquire("bob", state_dir=tmp_path)
-    bob_chain = json.loads((tmp_path / ".calls" / "bob.json").read_text())
+    bob_chain = json.loads((tmp_path / ".calls" / "bob.json").read_text())["chain"]
     assert bob_chain == ["alice", "bob"]
 
 
@@ -101,10 +101,32 @@ def test_release_then_reacquire_works(tmp_path: Path) -> None:
     callchain.acquire("alice", state_dir=tmp_path)
 
 
+def test_stale_marker_from_dead_pid_is_reclaimed(tmp_path: Path) -> None:
+    """A .calls marker left by a crashed cmt (dead owner_pid) must not lock
+    the target forever — the next acquire reclaims it."""
+    calls = tmp_path / ".calls"
+    calls.mkdir(parents=True)
+    # PID 999999 is overwhelmingly unlikely to be alive
+    (calls / "alice.json").write_text(json.dumps({"chain": ["alice"], "owner_pid": 999999}))
+    callchain.acquire("alice", state_dir=tmp_path)  # must not raise
+    rec = json.loads((calls / "alice.json").read_text())
+    assert rec["chain"] == ["alice"]
+    assert rec["owner_pid"] == os.getpid()
+
+
+def test_live_marker_still_blocks(tmp_path: Path) -> None:
+    """A marker owned by a live process (our own pid) blocks as TargetBusy."""
+    calls = tmp_path / ".calls"
+    calls.mkdir(parents=True)
+    (calls / "alice.json").write_text(json.dumps({"chain": ["alice"], "owner_pid": os.getpid()}))
+    with pytest.raises(callchain.TargetBusy):
+        callchain.acquire("alice", state_dir=tmp_path)
+
+
 def test_acquire_unknown_caller_id_falls_back_to_empty_chain(tmp_path: Path, monkeypatch) -> None:
     """If CMT_AGENT_ID points at a deleted/missing state, treat as
     orchestrator (no chain) rather than crash."""
     monkeypatch.setenv("CMT_AGENT_ID", "id-ghost")
     callchain.acquire("alice", state_dir=tmp_path)
-    chain = json.loads((tmp_path / ".calls" / "alice.json").read_text())
+    chain = json.loads((tmp_path / ".calls" / "alice.json").read_text())["chain"]
     assert chain == ["alice"]

@@ -30,15 +30,39 @@ def _calls_dir(state_dir: Path) -> Path:
     return state_dir / ".calls"
 
 
-def _chain_for(state_dir: Path, name: str) -> list[str]:
-    """The chain that led to ``name`` being called — empty if not in-flight."""
+def _pid_alive(pid: int) -> bool:
+    """True if a process with ``pid`` exists. ``kill(pid, 0)`` raises
+    ProcessLookupError if it's gone, PermissionError if it's alive but
+    owned by someone else (still alive for our purposes)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_call(state_dir: Path, name: str) -> dict | None:
+    """Raw in-flight record for ``name`` — None if not in-flight."""
     p = _calls_dir(state_dir) / f"{name}.json"
     if not p.exists():
-        return []
+        return None
     try:
-        return list(json.loads(p.read_text()))
+        data = json.loads(p.read_text())
     except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _chain_for(state_dir: Path, name: str) -> list[str]:
+    """The chain that led to ``name`` being called — empty if not in-flight."""
+    rec = _read_call(state_dir, name)
+    if rec is None:
         return []
+    return list(rec.get("chain", []))
 
 
 def _caller_name(state_dir: Path) -> str | None:
@@ -95,15 +119,36 @@ def acquire(
     calls = _calls_dir(state_dir)
     calls.mkdir(parents=True, exist_ok=True)
     path = calls / f"{target}.json"
+    record = json.dumps({"chain": new_chain, "owner_pid": os.getpid()}).encode()
     try:
         fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        existing = _chain_for(state_dir, target)
-        raise TargetBusy(
-            f"target {target!r} is already being called (in-flight chain: {existing})"
-        )
+        # In-flight marker exists. If the process that wrote it is gone (cmt
+        # crashed / was Ctrl-C'd mid-ask), the marker is stale — reclaim it.
+        # Otherwise a live call owns the target.
+        rec = _read_call(state_dir, target)
+        owner = int(rec.get("owner_pid", 0)) if rec else 0
+        if rec is not None and _pid_alive(owner):
+            raise TargetBusy(
+                f"target {target!r} is already being called "
+                f"(pid {owner}, in-flight chain: {rec.get('chain', [])})"
+            )
+        # stale or unreadable — take it over
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # someone else won the reclaim race
+            rec = _read_call(state_dir, target)
+            raise TargetBusy(
+                f"target {target!r} is already being called "
+                f"(in-flight chain: {rec.get('chain', []) if rec else []})"
+            )
     try:
-        os.write(fd, json.dumps(new_chain).encode())
+        os.write(fd, record)
     finally:
         os.close(fd)
     return new_chain

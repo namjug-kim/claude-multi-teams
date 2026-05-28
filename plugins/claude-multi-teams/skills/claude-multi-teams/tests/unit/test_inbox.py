@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from cmt import inbox
+from cmt.workflow import inbox
 
 
 def test_enqueue_returns_message_with_fields(tmp_path: Path) -> None:

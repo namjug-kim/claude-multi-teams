@@ -20,6 +20,7 @@ read/write whichever format their CLI accepts.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from typing import Literal
@@ -78,8 +79,14 @@ def _tmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, s
 
 
 def _tmux_paste_bracketed(pane: str, text: str) -> None:
-    _tmux("set-buffer", "--", text)
-    _tmux("paste-buffer", "-p", "-t", pane)
+    # Per-pane named buffer, not the shared default buffer. With the default
+    # buffer, two concurrent asks race: A's set-buffer is clobbered by B's
+    # before A's paste-buffer fires, so A's pane receives B's text. A named
+    # buffer per pane removes the shared state. `-d` drops the buffer after
+    # pasting so it doesn't accumulate.
+    buf = "cmt-" + re.sub(r"[^A-Za-z0-9_-]", "_", pane)
+    _tmux("set-buffer", "-b", buf, "--", text)
+    _tmux("paste-buffer", "-b", buf, "-d", "-p", "-t", pane)
 
 
 def _tmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:

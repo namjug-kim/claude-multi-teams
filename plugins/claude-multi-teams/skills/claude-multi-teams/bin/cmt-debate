@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Multi-agent debate (actor-model) on a single topic.
+
+Spawns three agents (alice=claude, bob=codex, carol=agy by default),
+seeds each with the topic, then loops a scheduler that:
+
+  1. dequeues one pending message per agent (FIFO)
+  2. dispatches it via `cmt ask` with the rolling transcript tail
+  3. parses the reply's INTENT: continue → fans the reply out to the
+     other agents' inboxes; done → stops forwarding from that agent
+  4. terminates when every inbox is empty (natural consensus) or after
+     MAX_ROUNDS
+
+Finally a fresh judge agent reads the full transcript and prints a
+verdict in CONSENSUS / DISAGREE_STILL / VERDICT format.
+
+Agents never call each other directly — the scheduler routes between
+inboxes, so the wait-for graph is empty by construction (no deadlock).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CMT = str(HERE / "cmt")
+
+DEFAULT_AGENTS = [("alice", "claude"), ("bob", "codex"), ("carol", "agy")]
+MAX_ROUNDS = 6
+TRANSCRIPT_TAIL_LINES = 60
+
+
+def run(args: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(args, check=check, text=True, capture_output=capture)
+
+
+def dequeue_one(agent: str) -> dict | None:
+    r = run([CMT, "wf", "dequeue", agent, "--json"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return json.loads(r.stdout)
+
+
+def enqueue(target: str, content: str, sender: str) -> None:
+    run([CMT, "wf", "enqueue", target, content, "--sender", sender], capture=False)
+
+
+def ask(agent: str, prompt: str) -> str:
+    return run([CMT, "wf", "ask", agent, prompt]).stdout.strip()
+
+
+def transcript_tail(path: Path) -> str:
+    if not path.exists():
+        return "(empty — opening round)"
+    lines = path.read_text().splitlines()
+    if len(lines) <= TRANSCRIPT_TAIL_LINES:
+        return "\n".join(lines)
+    return "...(earlier truncated)...\n" + "\n".join(lines[-TRANSCRIPT_TAIL_LINES:])
+
+
+def seed_prompt(topic: str) -> str:
+    return (
+        f"Topic: {topic}\n\n"
+        "Reply with EXACTLY this format:\n"
+        "AGREE: <1 specific point you agree with from the transcript, or 'opening — n/a' if no transcript>\n"
+        "DISAGREE: <1 specific point you reject>\n"
+        "POSITION: <your stance, 1-2 sentences, max overlap with others where honest>\n"
+        "INTENT: continue OR done (done = your position has settled and you have nothing to add)"
+    )
+
+
+def parse_intent(reply: str) -> str:
+    m = re.search(r"INTENT\s*:\s*(\w+)", reply, re.IGNORECASE)
+    return m.group(1).strip().lower() if m else "continue"
+
+
+def run_debate(topic: str, transcript: Path, agents: list[str]) -> None:
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text("")
+    print(f"TOPIC: {topic}\nTRANSCRIPT: {transcript}\n")
+
+    for a in agents:
+        enqueue(a, seed_prompt(topic), sender="orchestrator")
+
+    for r in range(1, MAX_ROUNDS + 1):
+        print(f"\n===== ROUND {r} =====")
+        any_dispatched = False
+        for a in agents:
+            msg = dequeue_one(a)
+            if msg is None:
+                continue
+            any_dispatched = True
+
+            prompt = (
+                f"Transcript so far:\n{transcript_tail(transcript)}\n\n"
+                f"--- Your new inbox message (from {msg['sender']}) ---\n{msg['content']}"
+            )
+            reply = ask(a, prompt)
+
+            with transcript.open("a") as f:
+                f.write(f"[R{r}] {a} (replying to {msg['sender']}):\n{reply}\n\n")
+            preview = reply.replace("\n", " / ")[:200]
+            print(f"  {a}: {preview}")
+
+            if parse_intent(reply) == "continue":
+                for other in agents:
+                    if other != a:
+                        enqueue(other, f"Position from {a}: {reply}", sender=a)
+            else:
+                print(f"    ↳ {a} signaled INTENT=done; not forwarding")
+
+        if not any_dispatched:
+            print("  (all inboxes empty — natural termination)")
+            break
+
+    print("\n===== JUDGE =====")
+    run([CMT, "spawn", "claude", "judge", "--replace"], capture=False)
+    time.sleep(4)
+    verdict_prompt = (
+        f"You are a neutral judge. Read this transcript of a multi-agent debate "
+        f"on:\n  {topic}\n\nTranscript:\n{transcript.read_text()}\n\n"
+        "In EXACTLY this format:\n"
+        "CONSENSUS: <1-2 sentences of what ALL agents actually agree on>\n"
+        "DISAGREE_STILL: <unresolved substantive disagreement, or 'None'>\n"
+        "VERDICT: <Reached / Partial / Failed>"
+    )
+    print(ask("judge", verdict_prompt))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Run a multi-agent actor-model debate.")
+    ap.add_argument("topic", help="Topic / question to debate")
+    ap.add_argument(
+        "--spawn",
+        action="store_true",
+        help="Spawn default agents (alice=claude, bob=codex, carol=agy) before debating.",
+    )
+    ap.add_argument(
+        "--keep",
+        action="store_true",
+        help="Do NOT kill agents at the end (useful for follow-up asks).",
+    )
+    ap.add_argument(
+        "--agents",
+        default="alice,bob,carol",
+        help="Comma-separated agent names already spawned (default: alice,bob,carol).",
+    )
+    ap.add_argument(
+        "--transcript",
+        default=None,
+        help="Override transcript path (default: $CMT_STATE_DIR/debate-<ts>.log).",
+    )
+    args = ap.parse_args()
+
+    agents = [n.strip() for n in args.agents.split(",") if n.strip()]
+    if args.spawn:
+        for name, kind in DEFAULT_AGENTS:
+            if name in agents:
+                run([CMT, "spawn", kind, name, "--replace"], capture=False)
+
+    state_dir = Path(os.environ.get("CMT_STATE_DIR", str(Path.home() / ".cache" / "cmt")))
+    transcript = Path(args.transcript) if args.transcript else \
+        state_dir / f"debate-{int(time.time())}.log"
+
+    try:
+        run_debate(args.topic, transcript, agents)
+    finally:
+        if not args.keep:
+            print("\n(cleaning up agents — pass --keep to skip)")
+            for a in agents + ["judge"]:
+                run([CMT, "kill", a], check=False, capture=False)
+
+
+if __name__ == "__main__":
+    main()

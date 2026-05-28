@@ -58,15 +58,18 @@ modals (Trust folder, etc.) are handled automatically.
 
 ## The primitives
 
-**12 core ops** that every workflow uses, plus **3 actor-model extension ops**
-for non-blocking message-passing patterns:
+Two layers in one binary. **Raw layer** (`cmt <verb>`) is pure agent
+manipulation — `cmt ask` sends a prompt verbatim. **Workflow layer**
+(`cmt wf <verb>`) composes several agents: role, kv, transcript, the actor
+extension, and a role-aware ask.
 
 ```
+# raw layer
 cmt spawn <agent> <name> [--cwd DIR] [--replace]
 cmt kill  <name> | --all
 cmt list  [--json]
 
-cmt ask         <name> "prompt"          # send + wait-done + return reply
+cmt ask         <name> "prompt"          # send verbatim + wait-done + reply
 cmt send        <name> "text" [--no-enter]
 cmt keys        <name> KEY [KEY ...]     # Enter / Esc / Tab / Up / C-u / ...
 cmt capture     <name> [--mode visible|full|wrapped]
@@ -78,10 +81,16 @@ cmt wait-output  <name> --match REGEX [--text]
 
 cmt whoami       [--json]                # from inside a spawned pane → self lookup
 
-# Actor-model extension (deadlock-proof P2P / scheduler patterns)
-cmt enqueue <target> "msg" [--sender NAME] [--replies-to ID]   # fire-and-forget
-cmt dequeue <agent>                                            # atomic FIFO take
-cmt inbox   <agent> [--clear]                                  # peek / drain
+# workflow layer
+cmt wf role set <name> "role"            # stable identity for the agent
+cmt wf role get <name>
+cmt wf ask  <name> "prompt"              # prepend role, then raw ask
+cmt wf put  <key> "value"  / cmt wf get <key>          # KV: world state
+cmt wf log  append <topic> "text" [--from NAME]        # transcript: history
+cmt wf log  tail   <topic> [--n N] [--json]
+cmt wf enqueue <target> "msg" [--sender NAME] [--replies-to ID]  # actor: FIFO
+cmt wf dequeue <agent>                                           # atomic take
+cmt wf inbox   <agent> [--clear]                                 # peek / drain
 ```
 
 ### `cmt ask` is the main verb
@@ -137,11 +146,11 @@ other directly; a scheduler writes to inboxes:
 
 ```bash
 # scheduler routes one message at a time, no agent blocks on another
-cmt enqueue alice "Topic: <something>. Reply with AGREE/DISAGREE/POSITION/INTENT."
+cmt wf enqueue alice "Topic: <something>. Reply with AGREE/DISAGREE/POSITION/INTENT."
 while true; do
   for n in alice bob carol; do
-    msg=$(cmt dequeue $n --json 2>/dev/null) || continue
-    reply=$(cmt ask $n "$msg")
+    msg=$(cmt wf dequeue $n --json 2>/dev/null) || continue
+    reply=$(cmt wf ask $n "$msg")
     # fan reply out to other inboxes, append to transcript, etc.
   done
   # break when all inboxes empty
@@ -158,6 +167,68 @@ environment. If the agent uses its shell tool to run `cmt whoami`, it
 gets back its own name + agent type + pane id + stable id. This lets a
 spawned worker call sibling workers (look up `cmt list`, then
 `cmt ask <other-name> "..."`).
+
+## Workflow recipes
+
+These are the higher-level patterns the foundation primitives compose
+into. Reach for these first when the user asks for a named pattern
+("토론 돌려봐", "review loop", "consensus") — don't reinvent.
+
+### Multi-agent debate (actor-model) — `cmt-debate`
+
+One bundled helper, lives next to `cmt`:
+
+```
+bin/cmt-debate "<topic>" --spawn               # spawn defaults + run
+bin/cmt-debate "<topic>"                       # against already-spawned agents
+bin/cmt-debate "<topic>" --keep                # leave agents up after
+bin/cmt-debate "<topic>" --agents alice,bob    # custom subset
+```
+
+What it does: seeds alice / bob / carol with the topic in an
+AGREE / DISAGREE / POSITION / INTENT structured format, then loops a
+scheduler — dequeue one message per agent, dispatch via `cmt ask`, fan
+the reply back out via `cmt enqueue` to the other inboxes. Stops when
+every inbox is empty (natural consensus) or hits `MAX_ROUNDS=6`. A
+neutral `judge` (claude) reads the transcript and prints a verdict.
+
+Transcript saved to `$CMT_STATE_DIR/debate-<ts>.log`.
+
+When *not* to use the helper: if you need custom round structure
+(e.g., 1 round position + 1 round rebuttal only), or non-default
+agents, or you want to inspect intermediate state — do it inline:
+
+```bash
+cmt spawn claude alice && cmt spawn codex bob && cmt spawn agy carol
+
+# round 1: each takes a position, in parallel
+( cmt ask alice "<topic> — position" > /tmp/r1-alice & )
+( cmt ask bob   "<topic> — position" > /tmp/r1-bob   & )
+( cmt ask carol "<topic> — position" > /tmp/r1-carol & )
+wait
+
+# round 2: each rebuts the other two, sequentially so they see each other
+cmt ask alice "Rebut these: bob=$(cat /tmp/r1-bob), carol=$(cat /tmp/r1-carol)"
+# ... etc
+
+cmt kill --all
+```
+
+The point: **don't write a `.sh` file for ad-hoc demos**. Either call
+`cmt-debate` for the canned pattern, or run the primitives inline with
+parallel Bash tool calls.
+
+### Reviewer loop (one agent reviews until satisfied)
+
+```bash
+cmt spawn codex reviewer
+reply=$(cmt ask reviewer "Review foo.py. Reply DONE on its own line when satisfied, else list issues.")
+while ! grep -q '^DONE$' <<< "$reply"; do
+  # ... fix the issues ...
+  reply=$(cmt ask reviewer "Re-review foo.py.")
+done
+cmt kill reviewer
+```
 
 ## Important rules
 
