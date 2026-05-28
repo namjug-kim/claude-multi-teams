@@ -12,3 +12,4 @@ write before the decision rather than after.
 | 0004 | [Serialize cmux CLI calls with flock](0004-cmux-cli-serialization.md) | 2026-05-27 |
 | 0005 | [Cycle prevention + per-target mutex for `cmt ask`](0005-callchain-cycle-prevention.md) | 2026-05-27 |
 | 0006 | [Actor-model inbox primitives](0006-actor-inbox-primitives.md) | 2026-05-27 |
+| 0007 | [Raw vs workflow layers; minimal delivery, no daemon](0007-raw-vs-workflow-layers.md) | 2026-05-28 |
