@@ -136,3 +136,25 @@ def test_paste_bracketed_branches_to_cmux_when_in_claude_teams(tmux_server, monk
         assert "surface:99" in calls
     finally:
         shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_send_keys_routes_literal_chars_through_send(tmux_server, monkeypatch) -> None:
+    """cmux ``send-key`` rejects literal characters ("Unknown key"), so a menu
+    digit like "2" must go through ``cmux send`` (text), while named keys
+    ("Enter") stay on ``send-key``. Regression for codex modal dismissal."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-keys"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        mux.send_keys("surface:99", "2", "Enter")
+        lines = [ln for ln in log.read_text().splitlines() if ln.strip()]
+        assert lines[0] == "send --surface surface:99 2"
+        assert lines[1] == "send-key --surface surface:99 enter"
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)

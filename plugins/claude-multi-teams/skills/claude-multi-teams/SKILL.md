@@ -1,6 +1,6 @@
 ---
 name: claude-multi-teams
-description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides 12 foundation primitives (spawn / kill / list / ask / send / keys / capture / last-reply / status / wait-status / wait-output / whoami) plus 3 actor-model extensions (enqueue / dequeue / inbox) for deadlock-proof P2P / consensus flows. Works in both real tmux and `cmux claude-teams`.
+description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides 13 foundation primitives (spawn / kill / list / ask / send / keys / capture / modal / last-reply / status / wait-status / wait-output / whoami) plus 3 actor-model extensions (enqueue / dequeue / inbox) for deadlock-proof P2P / consensus flows. Works in both real tmux and `cmux claude-teams`.
 allowed-tools: Bash
 ---
 
@@ -73,6 +73,7 @@ cmt ask         <name> "prompt"          # send verbatim + wait-done + reply
 cmt send        <name> "text" [--no-enter]
 cmt keys        <name> KEY [KEY ...]     # Enter / Esc / Tab / Up / C-u / ...
 cmt capture     <name> [--mode visible|full|wrapped]
+cmt modal       <name> [--json]          # parse a blocking selection modal (rc=1 if none)
 cmt last-reply  <name>                   # re-extract most recent reply
 
 cmt status       <name>                  # working | done | blocked | dead

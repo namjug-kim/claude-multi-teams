@@ -57,6 +57,7 @@ cmt ask         <name> "prompt"          # send + wait-done + return reply
 cmt send        <name> "text" [--no-enter]
 cmt keys        <name> KEY [KEY ...]
 cmt capture     <name> [--mode visible|full|wrapped]
+cmt modal       <name> [--json]          # parse a blocking selection modal (rc=1 if none)
 cmt last-reply  <name>
 
 cmt status       <name>                  # working | done | blocked | dead

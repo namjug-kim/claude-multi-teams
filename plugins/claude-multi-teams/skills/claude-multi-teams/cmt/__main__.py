@@ -20,6 +20,7 @@ from cmt.ops import keys as keys_op
 from cmt.ops import kill as kill_op
 from cmt.ops import last_reply as last_reply_op
 from cmt.ops import list_ as list_op
+from cmt.ops import modal as modal_op
 from cmt.ops import send as send_op
 from cmt.ops import spawn as spawn_op
 from cmt.ops import status as status_op
@@ -87,6 +88,21 @@ def _cmd_keys(args) -> int:
 
 def _cmd_capture(args) -> int:
     sys.stdout.write(capture_op.capture(args.name, mode=args.mode))
+    return 0
+
+
+def _cmd_modal(args) -> int:
+    m = modal_op.inspect(args.name)
+    if m is None:
+        if args.json:
+            print("null")
+        else:
+            print("(no modal)")
+        return 1
+    if args.json:
+        print(json.dumps(dataclasses.asdict(m)))
+    else:
+        print(m.render())
     return 0
 
 
@@ -267,6 +283,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name")
     sp.add_argument("--mode", choices=["visible", "full", "wrapped"], default="full")
     sp.set_defaults(func=_cmd_capture)
+
+    sp = sub.add_parser("modal", help="inspect a startup selection modal (rc=1 if none); answer via `keys`")
+    sp.add_argument("name")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_modal)
 
     sp = sub.add_parser("last-reply", help="re-extract the most recent assistant text")
     sp.add_argument("name")

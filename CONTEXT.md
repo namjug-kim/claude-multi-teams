@@ -123,6 +123,7 @@ Additions to either layer require explicit grill.
 | op | role |
 |---|---|
 | `capture` | read pane screen as plain text. Modes: visible / full-scrollback (default) / wrap-joined (tmux `-J`, important for agy where long indented response lines wrap at terminal width). |
+| `modal` | parse a blocking numbered selection modal from the live screen (title / options / highlighted row / footer), by *structure* not exact wording — so new modals (Update available, Hooks need review, …) are recognized without code changes. Read-only; answer by composing with `keys`. Backs the codex spawn-time warmup's modal handling. |
 | `extract-response` | return the agent's last reply as a clean string. Per-agent parser: jsonl assistant-message walk for claude/codex, `> <prompt>` … `─{40,}` block for agy. |
 
 ### State detection
@@ -235,6 +236,7 @@ cmt ask <name> "prompt" | @file | -      # sends verbatim
 cmt send <name> "text" [--no-enter]
 cmt keys <name> KEY [KEY ...]
 cmt capture <name> [--mode visible|full|wrapped]
+cmt modal <name> [--json]
 cmt last-reply <name>
 cmt status <name>
 cmt wait-status <name> <target>

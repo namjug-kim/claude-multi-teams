@@ -213,10 +213,16 @@ def _tmux_key_to_cmux(key: str) -> str:
 
 
 def _cmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:
-    # cmux send-key takes one key per call (no varargs).
+    # cmux send-key takes one *named* key per call (enter, up, ctrl+c, …) and
+    # rejects literal characters ("Unknown key"). Route single printable chars
+    # (e.g. a menu digit "2") through `cmux send` (text input); everything else
+    # is a named key. tmux's send-keys handles both, so only cmux needs this.
     for k in keys:
-        _cmux("send-key", "--surface", pane, _tmux_key_to_cmux(k),
-              stdout=subprocess.DEVNULL)
+        if len(k) == 1 and k.isprintable():
+            _cmux("send", "--surface", pane, k, stdout=subprocess.DEVNULL)
+        else:
+            _cmux("send-key", "--surface", pane, _tmux_key_to_cmux(k),
+                  stdout=subprocess.DEVNULL)
 
 
 def _cmux_capture(pane: str, mode: CaptureMode) -> str:
