@@ -104,6 +104,7 @@ def test_kill_skips_close_when_pane_not_alive(tmp_path: Path, monkeypatch) -> No
     )
     state.save(s, state_dir=tmp_path / "state")
     calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: None)
     monkeypatch.setattr(mux_mod, "pane_alive", lambda p: False)
     monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
     kill_op.kill("stale", state_dir=tmp_path / "state")
@@ -119,6 +120,7 @@ def test_kill_closes_pane_when_alive(tmp_path: Path, monkeypatch) -> None:
     )
     state.save(s, state_dir=tmp_path / "state")
     calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: None)
     monkeypatch.setattr(mux_mod, "pane_alive", lambda p: True)
     monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
     kill_op.kill("live", state_dir=tmp_path / "state")
@@ -150,6 +152,7 @@ def test_kill_all_skips_dead_panes(tmp_path: Path, monkeypatch) -> None:
             state_dir=tmp_path / "state",
         )
     calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: None)
     monkeypatch.setattr(mux_mod, "pane_alive", lambda p: p == "surface:7")
     monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
     kill_op.kill_all(state_dir=tmp_path / "state")
@@ -177,3 +180,35 @@ def test_spawn_replace_skips_close_when_pane_not_alive(tmp_path: Path, monkeypat
                        state_dir=tmp_path / "state")
     assert calls == []  # stale old pane never closed
     assert s.pane_id == "surface:300"
+
+
+def _ghost_on_current_pane(name: str, cwd: Path) -> state.AgentState:
+    """A tracked agent whose pane_id is the pane cmt runs in — simulates a
+    stale/recycled ``surface:N`` (or ``%pane``) ref now pointing at the
+    orchestrator pane."""
+    return state.AgentState(
+        name=name, agent="claude", agent_id="ghost",
+        pane_id=os.environ["TMUX_PANE"], cwd=str(cwd), started_at="t",
+    )
+
+
+def test_kill_refuses_current_pane(tmp_path: Path, tmux_server) -> None:
+    state.save(_ghost_on_current_pane("ghost", tmp_path), state_dir=tmp_path / "state")
+    with pytest.raises(RuntimeError, match="running in"):
+        kill_op.kill("ghost", state_dir=tmp_path / "state")
+    # state preserved AND the orchestrator pane is untouched
+    assert state.load("ghost", state_dir=tmp_path / "state") is not None
+    from cmt import mux as mux_mod
+    assert mux_mod.pane_alive(os.environ["TMUX_PANE"])
+
+
+def test_kill_all_skips_current_pane(tmp_path: Path, tmux_server, fake_claude) -> None:
+    real = spawn_op.spawn("claude", "real", cwd=str(tmp_path), state_dir=tmp_path / "state")
+    state.save(_ghost_on_current_pane("ghost", tmp_path), state_dir=tmp_path / "state")
+    kill_op.kill_all(state_dir=tmp_path / "state")
+    # real agent torn down; ghost (current pane) left alone; main pane survives
+    assert state.load("real", state_dir=tmp_path / "state") is None
+    assert state.load("ghost", state_dir=tmp_path / "state") is not None
+    from cmt import mux as mux_mod
+    assert mux_mod.pane_alive(os.environ["TMUX_PANE"])
+    assert not mux_mod.pane_alive(real.pane_id)

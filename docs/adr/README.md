@@ -14,3 +14,4 @@ write before the decision rather than after.
 | 0006 | [Actor-model inbox primitives](0006-actor-inbox-primitives.md) | 2026-05-27 |
 | 0007 | [Raw vs workflow layers; minimal delivery, no daemon](0007-raw-vs-workflow-layers.md) | 2026-05-28 |
 | 0008 | [Per-agent `CODEX_HOME` to isolate rollout discovery](0008-codex-home-isolation.md) | 2026-05-29 |
+| 0009 | [`kill` never closes the pane cmt runs in](0009-kill-never-closes-current-pane.md) | 2026-05-29 |

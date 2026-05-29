@@ -285,6 +285,28 @@ def _cmux_pane_alive(pane: str) -> bool:
     return res.returncode == 0
 
 
+def _cmux_current_pane() -> str | None:
+    """The ref of the currently *selected* (focused) cmux surface, or None.
+
+    cmux doesn't expose this pane's own ref to its process (``$CMUX_SURFACE_ID``
+    is a UUID, not the ``surface:N`` ref cmt persists), so we read the selected
+    surface from ``list-pane-surfaces``. When cmt is driven interactively this
+    is the orchestrator pane — the one we must never close."""
+    import json
+
+    res = _cmux("list-pane-surfaces", "--json", check=False)
+    if res.returncode != 0:
+        return None
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return None
+    for s in data.get("surfaces", []):
+        if s.get("selected"):
+            return s.get("ref")
+    return None
+
+
 def _cmux_list_panes() -> list[str]:
     """Best-effort list of cmux terminal surfaces in the current workspace,
     returned as ``surface:N`` refs."""
@@ -362,3 +384,12 @@ def list_panes() -> list[str]:
     if _use_cmux_native():
         return _cmux_list_panes()
     return _tmux_list_panes()
+
+
+def current_pane() -> str | None:
+    """The pane cmt is running in (tmux ``$TMUX_PANE``) or the focused cmux
+    surface ref. Used by ``kill`` to refuse closing the orchestrator's own
+    pane — a stale/recycled ``surface:N`` ref can otherwise point here."""
+    if _use_cmux_native():
+        return _cmux_current_pane()
+    return os.environ.get("TMUX_PANE") or None

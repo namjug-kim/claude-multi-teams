@@ -72,7 +72,11 @@ def _cmd_kill(args) -> int:
         if not args.name:
             print("error: name required (or pass --all)", file=sys.stderr)
             return 2
-        kill_op.kill(args.name)
+        try:
+            kill_op.kill(args.name)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     return 0
 
 
