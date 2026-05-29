@@ -21,10 +21,51 @@ from pathlib import Path
 def sessions_root() -> Path:
     """Resolve the codex sessions root, honoring ``$CODEX_HOME`` if set.
     Default: ``~/.codex/sessions``."""
+    return source_home() / "sessions"
+
+
+def source_home() -> Path:
+    """The real codex home to mirror into each agent's private home —
+    honoring ``$CODEX_HOME`` if set, else ``~/.codex``."""
     base = os.environ.get("CODEX_HOME")
     if base:
-        return Path(base) / "sessions"
-    return Path(os.environ.get("HOME", "/")) / ".codex" / "sessions"
+        return Path(base)
+    return Path(os.environ.get("HOME", "/")) / ".codex"
+
+
+def agent_home(state_dir: Path, agent_id: str) -> Path:
+    """Per-agent private ``CODEX_HOME`` under the cmt state dir.
+
+    Isolating each codex's sessions tree here is what stops concurrent
+    first-asks from resolving to each other's rollout file: with a shared
+    ``$CODEX_HOME/sessions`` root, discovery ("newest rollout after the spawn
+    marker") cannot tell sibling rollouts apart and several agents bind to the
+    same file — byte-identical / cross-wired replies. A private root makes the
+    one rollout that appears unambiguous. Derived purely from
+    ``(state_dir, agent_id)`` so spawn and the first ask agree without storing
+    extra state."""
+    return state_dir / "codex-home" / agent_id
+
+
+def seed_agent_home(home: Path, source: Path) -> None:
+    """Make ``home`` behave like ``source`` but with a private ``sessions/``.
+
+    Symlinks every top-level entry of ``source`` into ``home`` so codex finds
+    the same auth, config, skills, hooks, rules, etc. — EXCEPT ``sessions``,
+    which becomes a real empty dir owned by this agent. That single carve-out
+    is the whole isolation; everything else stays shared exactly as it was
+    under one ``$CODEX_HOME``, so behavior is unchanged. Idempotent: existing
+    links/dirs are left as-is."""
+    home.mkdir(parents=True, exist_ok=True)
+    if source.exists():
+        for entry in source.iterdir():
+            if entry.name == "sessions":
+                continue
+            link = home / entry.name
+            if link.exists() or link.is_symlink():
+                continue
+            link.symlink_to(entry)
+    (home / "sessions").mkdir(parents=True, exist_ok=True)
 
 
 def snapshot_max_mtime(root: Path) -> float:

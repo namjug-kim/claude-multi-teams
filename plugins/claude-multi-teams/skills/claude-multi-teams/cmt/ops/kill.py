@@ -19,7 +19,23 @@ def kill(name: str, state_dir: Path | None = None) -> None:
     # Drop the tracked state either way.
     if mux.pane_alive(s.pane_id):
         mux.kill_pane(s.pane_id)
+    _cleanup_codex_home(s, state_dir)
     state.remove(name, state_dir=state_dir)
+
+
+def _cleanup_codex_home(s: state.AgentState, state_dir: Path | None) -> None:
+    """Remove a codex agent's per-agent CODEX_HOME scratch dir. Its entries are
+    symlinks into the real home (rmtree drops the links, not the targets); only
+    the private ``sessions/`` rollouts are real and they're no longer needed
+    once the pane is gone. Best-effort."""
+    if s.agent != "codex":
+        return
+    import shutil
+
+    from cmt import codex_session
+
+    sd = state_dir if state_dir is not None else state.default_dir()
+    shutil.rmtree(codex_session.agent_home(sd, s.agent_id), ignore_errors=True)
 
 
 def kill_all(state_dir: Path | None = None) -> None:

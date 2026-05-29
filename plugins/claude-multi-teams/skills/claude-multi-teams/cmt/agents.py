@@ -16,11 +16,14 @@ from typing import Callable
 @dataclass(frozen=True)
 class SpawnContext:
     """Inputs handed to a spec's spawn-time hooks. ``session_uuid`` is meaningful
-    for agents that accept ``--session-id`` (claude); codex/agy ignore it."""
+    for agents that accept ``--session-id`` (claude); codex/agy ignore it.
+    ``state_dir`` is the resolved cmt state dir — codex derives its per-agent
+    ``CODEX_HOME`` from it; ``None`` means "use the default" (resolved lazily)."""
     name: str
     agent_id: str
     cwd: str
     session_uuid: str
+    state_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,10 @@ class AgentSpec:
     # Optional hook called on the first ``ask`` if session_file is still None,
     # to resolve a delayed session file. Signature: (ctx, state) -> str | None.
     resolve_session_file: Callable[..., str | None] | None = None
+    # Optional hook returning extra env to inject into the spawned pane,
+    # overriding any propagated vars. codex uses it to point CODEX_HOME at a
+    # per-agent dir so its rollout sessions tree is isolated from siblings.
+    spawn_env: Callable[["SpawnContext"], dict[str, str]] | None = None
     # Per-agent done / status / extract dispatch. Defaults wired below to the
     # claude (jsonl + stop_reason) strategy.
     await_done: Callable[..., "object"] | None = None
@@ -89,11 +96,31 @@ def _codex_session_file(ctx: SpawnContext, env: dict[str, str]) -> str | None:
     return None
 
 
+def _codex_agent_sessions(ctx: SpawnContext) -> "Path":
+    """The per-agent private sessions tree we scan for this codex's rollout."""
+    from cmt import codex_session, state
+    sd = ctx.state_dir if ctx.state_dir is not None else state.default_dir()
+    return codex_session.agent_home(Path(sd), ctx.agent_id) / "sessions"
+
+
 def _codex_pre_spawn_marker(ctx: SpawnContext) -> str | None:
-    # Snapshot the max-mtime of the codex sessions tree as a float string.
-    # On the first ask we scan for a rollout newer than this.
+    # Snapshot the max-mtime of this agent's *private* sessions tree as a float
+    # string. On the first ask we scan for a rollout newer than this. With an
+    # isolated home this is normally 0.0 (empty tree) — the marker stays as a
+    # guard against any pre-existing file.
     from cmt import codex_session
-    return str(codex_session.snapshot_max_mtime(codex_session.sessions_root()))
+    return str(codex_session.snapshot_max_mtime(_codex_agent_sessions(ctx)))
+
+
+def _codex_spawn_env(ctx: SpawnContext) -> dict[str, str]:
+    # Point this codex at a per-agent CODEX_HOME (mirrors the real home but
+    # with a private sessions/ dir), so concurrent first-asks never resolve to
+    # each other's rollout file. See codex_session.agent_home.
+    from cmt import codex_session, state
+    sd = ctx.state_dir if ctx.state_dir is not None else state.default_dir()
+    home = codex_session.agent_home(Path(sd), ctx.agent_id)
+    codex_session.seed_agent_home(home, codex_session.source_home())
+    return {"CODEX_HOME": str(home)}
 
 
 def _codex_post_spawn_warmup(ctx: SpawnContext, pane_id: str) -> None:
@@ -135,7 +162,7 @@ def _codex_resolve_session_file(ctx: SpawnContext, spawn_marker: str | None) -> 
     from cmt import codex_session
     after = float(spawn_marker) if spawn_marker else 0.0
     found = codex_session.wait_for_new_rollout(
-        codex_session.sessions_root(),
+        _codex_agent_sessions(ctx),
         after=after,
         timeout=10.0,
         poll_interval=0.1,
@@ -211,6 +238,7 @@ def _build_agents() -> dict[str, AgentSpec]:
             pre_spawn_marker=_codex_pre_spawn_marker,
             post_spawn_warmup=_codex_post_spawn_warmup,
             resolve_session_file=_codex_resolve_session_file,
+            spawn_env=_codex_spawn_env,
             await_done=_codex_await,
             status_fn=_codex_status,
             extract_response=_codex_extract,

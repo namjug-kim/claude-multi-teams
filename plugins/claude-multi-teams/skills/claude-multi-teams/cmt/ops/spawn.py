@@ -57,7 +57,11 @@ def spawn(
 
     agent_id = uuid.uuid4().hex[:16]
     session_uuid = str(uuid.uuid4())
-    ctx = agents.SpawnContext(name=name, agent_id=agent_id, cwd=cwd, session_uuid=session_uuid)
+    sd = state_dir if state_dir is not None else state.default_dir()
+    ctx = agents.SpawnContext(
+        name=name, agent_id=agent_id, cwd=cwd,
+        session_uuid=session_uuid, state_dir=sd,
+    )
     argv = spec.build_argv(ctx)
 
     # Capture spawn-time bookmark (e.g., codex max-mtime over sessions tree)
@@ -76,6 +80,10 @@ def spawn(
         for k, v in os.environ.items():
             if k.startswith(prefix):
                 env_vars[k] = v
+    # Spec-supplied env wins over propagated vars (codex overrides CODEX_HOME
+    # to its per-agent isolated home).
+    if spec.spawn_env is not None:
+        env_vars.update(spec.spawn_env(ctx))
 
     cmd = shlex.join(argv)
     pane_id = mux.split_pane(parent, cwd, cmd, env_vars)

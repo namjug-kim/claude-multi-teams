@@ -11,6 +11,9 @@ from pathlib import Path
 
 from cmt.codex_session import (
     sessions_root,
+    source_home,
+    agent_home,
+    seed_agent_home,
     snapshot_max_mtime,
     find_new_rollout,
 )
@@ -118,3 +121,56 @@ def test_wait_for_new_rollout_times_out(tmp_path: Path) -> None:
     marker = snapshot_max_mtime(tmp_path)
     found = wait_for_new_rollout(tmp_path, after=marker, timeout=0.3, poll_interval=0.05)
     assert found is None
+
+
+# --- per-agent CODEX_HOME isolation (cross-wire root fix) -------------------
+
+
+def test_agent_home_is_distinct_per_agent_id(tmp_path: Path) -> None:
+    a = agent_home(tmp_path, "aaaa")
+    b = agent_home(tmp_path, "bbbb")
+    assert a != b
+    assert a.parent == b.parent == tmp_path / "codex-home"
+
+
+def test_source_home_respects_codex_home(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert source_home() == tmp_path
+
+
+def test_seed_agent_home_symlinks_everything_but_sessions(tmp_path: Path) -> None:
+    source = tmp_path / "real-codex"
+    (source / "sessions" / "2026").mkdir(parents=True)
+    (source / "auth.json").write_text("{}")
+    (source / "config.toml").write_text("x=1")
+    (source / "skills").mkdir()
+
+    home = tmp_path / "agent-home"
+    seed_agent_home(home, source)
+
+    # auth/config/skills are symlinks pointing back at the real home
+    assert (home / "auth.json").is_symlink()
+    assert (home / "auth.json").read_text() == "{}"
+    assert (home / "skills").is_symlink()
+    # sessions is a REAL private dir, not a link to the shared one
+    assert (home / "sessions").is_dir()
+    assert not (home / "sessions").is_symlink()
+    assert not (home / "sessions" / "2026").exists()
+
+
+def test_seed_agent_home_is_idempotent(tmp_path: Path) -> None:
+    source = tmp_path / "real-codex"
+    source.mkdir()
+    (source / "auth.json").write_text("{}")
+    home = tmp_path / "agent-home"
+    seed_agent_home(home, source)
+    seed_agent_home(home, source)  # second call must not raise
+    assert (home / "auth.json").is_symlink()
+
+
+def test_seed_agent_home_handles_missing_source(tmp_path: Path) -> None:
+    # No prior codex login: source home doesn't exist. Still yields a private
+    # sessions dir so discovery has somewhere to look.
+    home = tmp_path / "agent-home"
+    seed_agent_home(home, tmp_path / "nonexistent")
+    assert (home / "sessions").is_dir()

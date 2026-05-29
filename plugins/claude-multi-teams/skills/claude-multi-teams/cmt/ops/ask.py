@@ -44,7 +44,7 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
     sd = state_dir if state_dir is not None else state.default_dir()
     callchain.acquire(name, sd)
     try:
-        return _ask_inner(name, prompt, s, spec, state_dir)
+        return _ask_inner(name, prompt, s, spec, sd)
     finally:
         callchain.release(name, sd)
 
@@ -56,6 +56,7 @@ def _ask_inner(name, prompt, s, spec, state_dir):
         mux.send_text(s.pane_id, prompt)
         ctx = agents.SpawnContext(
             name=s.name, agent_id=s.agent_id, cwd=s.cwd, session_uuid="",
+            state_dir=state_dir,
         )
         new_session = spec.resolve_session_file(ctx, s.spawn_marker)
         if new_session is None:

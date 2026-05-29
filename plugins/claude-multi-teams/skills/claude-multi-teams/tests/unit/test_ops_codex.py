@@ -94,3 +94,74 @@ def test_kill_codex(tmp_path: Path, tmux_server, fake_codex) -> None:
     time.sleep(0.1)
     assert state.load("alice", state_dir=tmp_path / "state") is None
     assert not mux_mod.pane_alive(s.pane_id)
+
+
+# --- per-agent CODEX_HOME isolation (cross-wire root fix) -------------------
+
+
+def test_codex_spawn_isolates_codex_home(tmp_path: Path, tmux_server, fake_codex) -> None:
+    from cmt import codex_session
+
+    sd = tmp_path / "state"
+    s = spawn_op.spawn("codex", "alice", cwd=str(tmp_path), state_dir=sd)
+    home = codex_session.agent_home(sd, s.agent_id)
+    # The pane got its own CODEX_HOME with a private (real, not symlinked)
+    # sessions tree — not the shared fixture home.
+    assert home.exists()
+    assert home != fake_codex["home"]
+    assert (home / "sessions").is_dir()
+    assert not (home / "sessions").is_symlink()
+
+
+def test_kill_codex_removes_agent_home(tmp_path: Path, tmux_server, fake_codex) -> None:
+    from cmt import codex_session
+
+    sd = tmp_path / "state"
+    s = spawn_op.spawn("codex", "alice", cwd=str(tmp_path), state_dir=sd)
+    home = codex_session.agent_home(sd, s.agent_id)
+    assert home.exists()
+    kill_op.kill("alice", state_dir=sd)
+    assert not home.exists()
+
+
+def test_concurrent_codex_first_asks_do_not_crosswire(
+    tmp_path: Path, tmux_server, fake_codex
+) -> None:
+    """The reported bug: many codex first-asks at once cross-wire because the
+    resolver picks the single newest rollout in a *shared* sessions root, so
+    several agents bind to the same file (byte-identical / wrong replies).
+
+    With per-agent CODEX_HOME each rollout lands in its own tree, so even
+    concurrent first-asks resolve unambiguously. Assert every agent gets the
+    echo of *its own* prompt and no two resolve to the same session file."""
+    import threading
+
+    sd = tmp_path / "state"
+    names = ["alice", "bob", "carol", "dave"]
+    for n in names:
+        spawn_op.spawn("codex", n, cwd=str(tmp_path), state_dir=sd)
+    time.sleep(0.4)
+
+    replies: dict[str, str] = {}
+    errors: dict[str, Exception] = {}
+
+    def run(n: str) -> None:
+        try:
+            replies[n] = ask_op.ask(n, f"prompt-{n}", state_dir=sd)
+        except Exception as e:  # noqa: BLE001 — surface per-thread failures
+            errors[n] = e
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    # Each agent received the echo of ITS OWN prompt — no cross-wiring.
+    assert replies == {n: f"echo: prompt-{n}" for n in names}
+    # And each resolved a distinct rollout file.
+    files = {
+        state.load(n, state_dir=sd).session_file for n in names
+    }
+    assert len(files) == len(names)
