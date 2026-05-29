@@ -124,6 +124,51 @@ def test_kill_codex_removes_agent_home(tmp_path: Path, tmux_server, fake_codex) 
     assert not home.exists()
 
 
+def test_first_ask_resends_when_paste_dropped(monkeypatch) -> None:
+    """A freshly-spawned pane can drop the first paste before it's input-ready
+    (the concurrent-spawn readiness race). _send_until_session must re-send
+    until the rollout appears, clearing the composer before each resend so the
+    prompt can't be doubled."""
+    from cmt.ops import ask as ask_mod
+
+    sent_text: list[str] = []
+    keys: list[str] = []
+    monkeypatch.setattr(ask_mod.mux, "send_text", lambda pane, txt: sent_text.append(txt))
+    monkeypatch.setattr(ask_mod.mux, "send_keys", lambda pane, *k: keys.extend(k))
+    monkeypatch.setattr(ask_mod.mux, "pane_alive", lambda pane: True)
+
+    calls = {"n": 0}
+
+    class Spec:
+        def resolve_session_file(self, ctx, marker, timeout):
+            calls["n"] += 1
+            # First two attempts: paste was dropped → no rollout. Third lands.
+            return "/sessions/rollout-x.jsonl" if calls["n"] >= 3 else None
+
+    s = type("S", (), {"pane_id": "%1", "spawn_marker": "0.0"})()
+    got = ask_mod._send_until_session(s, "hello", Spec(), ctx=None)
+
+    assert got == "/sessions/rollout-x.jsonl"
+    assert len(sent_text) == 3            # initial + 2 resends
+    assert keys == ["C-u", "C-u"]         # composer cleared before each resend
+    assert sent_text == ["hello", "hello", "hello"]
+
+
+def test_first_ask_gives_up_if_pane_dies(monkeypatch) -> None:
+    from cmt.ops import ask as ask_mod
+
+    monkeypatch.setattr(ask_mod.mux, "send_text", lambda pane, txt: None)
+    monkeypatch.setattr(ask_mod.mux, "send_keys", lambda pane, *k: None)
+    monkeypatch.setattr(ask_mod.mux, "pane_alive", lambda pane: False)
+
+    class Spec:
+        def resolve_session_file(self, ctx, marker, timeout):
+            return None
+
+    s = type("S", (), {"pane_id": "%1", "spawn_marker": "0.0"})()
+    assert ask_mod._send_until_session(s, "hi", Spec(), ctx=None) is None
+
+
 def test_concurrent_codex_first_asks_do_not_crosswire(
     tmp_path: Path, tmux_server, fake_codex
 ) -> None:

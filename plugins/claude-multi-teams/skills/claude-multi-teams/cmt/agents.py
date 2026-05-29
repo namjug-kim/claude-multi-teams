@@ -151,20 +151,23 @@ def _agy_post_spawn_warmup(ctx: SpawnContext, pane_id: str) -> None:
     )
 
 
-def _codex_resolve_session_file(ctx: SpawnContext, spawn_marker: str | None) -> str | None:
+def _codex_resolve_session_file(
+    ctx: SpawnContext, spawn_marker: str | None, timeout: float = 10.0
+) -> str | None:
     """Block until a new rollout file appears, return its path. Called from
     the first ``ask`` if state.session_file is still None for codex.
 
     ``spawn_marker`` is the float-string captured by ``_codex_pre_spawn_marker``
-    at spawn time. Times out after 10s if codex never wrote a new rollout —
-    in which case ``ask`` will raise.
+    at spawn time. Returns None if codex never wrote a new rollout within
+    ``timeout`` — the first-ask send loop uses a short ``timeout`` per attempt
+    so it can re-send a dropped paste rather than block the full window once.
     """
     from cmt import codex_session
     after = float(spawn_marker) if spawn_marker else 0.0
     found = codex_session.wait_for_new_rollout(
         _codex_agent_sessions(ctx),
         after=after,
-        timeout=10.0,
+        timeout=timeout,
         poll_interval=0.1,
     )
     return str(found) if found is not None else None

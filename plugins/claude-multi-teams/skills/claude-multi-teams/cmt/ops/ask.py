@@ -51,17 +51,20 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
 
 def _ask_inner(name, prompt, s, spec, state_dir):
     if s.session_file is None and spec.resolve_session_file is not None:
-        # codex first-ask: prompt must hit the agent before the rollout file
-        # appears. Then resolve, then persist.
-        mux.send_text(s.pane_id, prompt)
+        # codex first-ask: the prompt must hit the agent before the rollout file
+        # appears. A freshly-spawned pane can still be settling when we paste —
+        # under concurrent spawn the banner renders before the input widget
+        # accepts input, so the first paste is silently dropped and no rollout
+        # is ever written. Re-send until the rollout shows up. Then resolve.
         ctx = agents.SpawnContext(
             name=s.name, agent_id=s.agent_id, cwd=s.cwd, session_uuid="",
             state_dir=state_dir,
         )
-        new_session = spec.resolve_session_file(ctx, s.spawn_marker)
+        new_session = _send_until_session(s, prompt, spec, ctx)
         if new_session is None:
             raise RuntimeError(
-                f"agent {s.agent!r} {name!r}: session file did not appear after first prompt"
+                f"agent {s.agent!r} {name!r}: session file did not appear after "
+                f"first prompt (re-sent {_FIRST_ASK_RESENDS}x)"
             )
         s = dataclasses.replace(s, session_file=new_session, baseline_offset=0)
         state.save(s, state_dir=state_dir)
@@ -85,6 +88,33 @@ def _ask_inner(name, prompt, s, spec, state_dir):
         raise RuntimeError(f"agent {name!r} died during ask")
 
     return spec.extract_response(s)
+
+
+# codex first-ask: total sends = _FIRST_ASK_RESENDS + 1, each waiting up to
+# _FIRST_ASK_PER_TRY for the rollout. A successful paste writes the rollout in
+# well under a second; the window only needs to outlast a freshly-spawned
+# pane's settle under concurrent load.
+_FIRST_ASK_RESENDS = 2
+_FIRST_ASK_PER_TRY = 5.0
+
+
+def _send_until_session(s, prompt, spec, ctx):
+    """Send the first prompt and wait for codex to write its rollout; if it
+    doesn't appear, the paste was dropped on a not-yet-ready pane — clear any
+    partial composer text and re-send. Returns the resolved session path, or
+    None after exhausting resends."""
+    for attempt in range(_FIRST_ASK_RESENDS + 1):
+        if attempt > 0:
+            # A prior paste may have half-landed (text in the composer, Enter
+            # swallowed). Clear the line first so the re-paste can't double it.
+            mux.send_keys(s.pane_id, "C-u")
+        mux.send_text(s.pane_id, prompt)
+        found = spec.resolve_session_file(ctx, s.spawn_marker, timeout=_FIRST_ASK_PER_TRY)
+        if found is not None:
+            return found
+        if not mux.pane_alive(s.pane_id):
+            return None
+    return None
 
 
 def _turn_started(s: "state.AgentState", name: str, state_dir) -> bool:
