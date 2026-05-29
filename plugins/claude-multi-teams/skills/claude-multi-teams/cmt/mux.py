@@ -154,6 +154,19 @@ def _cmux(*args: str, check: bool = True, capture: bool = True,
         os.close(lock_fd)
 
 
+_CMUX_SURFACE_RE = re.compile(r"^surface:\d+$")
+
+
+def _is_cmux_surface(pane: str) -> bool:
+    """A cmt-created cmux pane id is always ``surface:<N>`` (parsed from
+    ``new-pane`` output). Require that exact shape before passing ``pane`` to
+    any cmux command whose ``--surface`` falls back to the *focused* surface
+    (the user's main tab) when the value is empty or unresolvable. An empty,
+    malformed (``surface:``, ``surface:abc``), or cross-backend (``%id``) value
+    must never reach those commands."""
+    return bool(_CMUX_SURFACE_RE.match(pane))
+
+
 def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, str]) -> str:
     """Create a new cmux pane and run ``cmd`` in it via the new pane's shell.
 
@@ -181,6 +194,11 @@ def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, s
 
 
 def _cmux_paste_bracketed(pane: str, text: str) -> None:
+    # Same focused-surface fallback hazard as close-surface (see
+    # _cmux_kill_pane): paste-buffer on an unresolvable --surface lands the
+    # text on the user's main tab. Never paste to a non-surface id.
+    if not _is_cmux_surface(pane):
+        return
     buf_name = f"cmt-{pane.replace(':', '-')}"
     _cmux("set-buffer", "--name", buf_name, "--", text, stdout=subprocess.DEVNULL)
     _cmux("paste-buffer", "--name", buf_name, "--surface", pane, stdout=subprocess.DEVNULL)
@@ -213,6 +231,11 @@ def _tmux_key_to_cmux(key: str) -> str:
 
 
 def _cmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:
+    # Same focused-surface fallback hazard as close-surface (see
+    # _cmux_kill_pane): send/send-key on an unresolvable --surface lands the
+    # keys on the user's main tab. Never send to a non-surface id.
+    if not _is_cmux_surface(pane):
+        return
     # cmux send-key takes one *named* key per call (enter, up, ctrl+c, …) and
     # rejects literal characters ("Unknown key"). Route single printable chars
     # (e.g. a menu digit "2") through `cmux send` (text input); everything else
@@ -226,6 +249,11 @@ def _cmux_send_keys(pane: str, keys: tuple[str, ...]) -> None:
 
 
 def _cmux_capture(pane: str, mode: CaptureMode) -> str:
+    # Fail closed on a non-surface id: capture-pane with an empty --surface
+    # falls back to the focused surface, so `cmt capture`/`modal` on a stale id
+    # would read the user's main tab instead of erroring. Return no screen.
+    if not _is_cmux_surface(pane):
+        return ""
     args = ["capture-pane", "--surface", pane]
     if mode in ("full", "wrapped"):
         args.append("--scrollback")
@@ -234,10 +262,22 @@ def _cmux_capture(pane: str, mode: CaptureMode) -> str:
 
 
 def _cmux_kill_pane(pane: str) -> None:
+    # `close-surface` defaults to the focused surface ($CMUX_SURFACE_ID — the
+    # user's main tab) when it can't resolve --surface. A stale or
+    # cross-backend id (empty, or a tmux "%id" from a state file written under
+    # the other backend) would trip that fallback and close the wrong pane, so
+    # only call it for a real cmux surface ref.
+    if not _is_cmux_surface(pane):
+        return
     _cmux("close-surface", "--surface", pane, check=False, stdout=subprocess.DEVNULL)
 
 
 def _cmux_pane_alive(pane: str) -> bool:
+    # A non-surface id (empty, or a tmux "%id" from stale/cross-backend state)
+    # is never a live cmux surface. Reject it without calling capture-pane,
+    # which could fall back to the focused surface and falsely report alive.
+    if not _is_cmux_surface(pane):
+        return False
     # `capture-pane` on a missing surface errors. A 0-exit capture means the
     # surface exists and is a terminal.
     res = _cmux("capture-pane", "--surface", pane, "--lines", "1",

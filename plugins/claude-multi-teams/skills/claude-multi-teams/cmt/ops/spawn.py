@@ -42,7 +42,11 @@ def spawn(
                 f"agent {name!r} already exists (pane {existing.pane_id}). "
                 f"use `cmt kill {name}` first, or `cmt spawn --replace {agent} {name}`."
             )
-        mux.kill_pane(existing.pane_id)
+        # Guard the close the same way `kill` does: a stale/foreign pane id
+        # must not fall through to cmux's focused-surface fallback (the user's
+        # main tab). See cmt.ops.kill.
+        if mux.pane_alive(existing.pane_id):
+            mux.kill_pane(existing.pane_id)
         state.remove(name, state_dir=state_dir)
 
     parent = parent_pane or os.environ.get("TMUX_PANE")
