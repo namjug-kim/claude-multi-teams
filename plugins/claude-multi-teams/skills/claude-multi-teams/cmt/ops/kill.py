@@ -12,7 +12,13 @@ def kill(name: str, state_dir: Path | None = None) -> None:
     s = state.load(name, state_dir=state_dir)
     if s is None:
         return
-    mux.kill_pane(s.pane_id)
+    # Only close a pane that's actually live in THIS mux session. A stale state
+    # file (cmux restarted → surface ids recycled, or a foreign/cross-backend
+    # id) must not drive a blind close: cmux's close-surface falls back to the
+    # focused surface — the user's main tab — when it can't resolve the id.
+    # Drop the tracked state either way.
+    if mux.pane_alive(s.pane_id):
+        mux.kill_pane(s.pane_id)
     state.remove(name, state_dir=state_dir)
 
 

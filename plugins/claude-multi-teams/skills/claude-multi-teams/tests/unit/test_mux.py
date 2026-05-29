@@ -138,6 +138,123 @@ def test_paste_bracketed_branches_to_cmux_when_in_claude_teams(tmux_server, monk
         shutil.rmtree(fake_bin, ignore_errors=True)
 
 
+def test_cmux_kill_pane_skips_non_surface_ids(tmux_server, monkeypatch) -> None:
+    """``cmux close-surface`` defaults to the focused surface ($CMUX_SURFACE_ID
+    — the user's main tab) when it can't resolve --surface. A stale or
+    cross-backend id (empty, or a tmux "%id") must therefore never reach it.
+    A real ``surface:N`` ref still goes through."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-kill"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        mux.kill_pane("%5")
+        mux.kill_pane("")
+        mux.kill_pane("surface:")     # malformed: no number
+        mux.kill_pane("surface:abc")  # malformed: non-numeric
+        assert log.read_text().strip() == ""  # cmux never invoked
+        mux.kill_pane("surface:99")
+        assert "close-surface --surface surface:99" in log.read_text()
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_pane_alive_false_for_non_surface_ids(tmux_server, monkeypatch) -> None:
+    """``pane_alive`` on a non-surface id returns False without calling
+    capture-pane, which could otherwise fall back to the focused surface and
+    falsely report it alive — defeating the kill-time liveness guard."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-alive"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        assert mux.pane_alive("%5") is False
+        assert mux.pane_alive("") is False
+        assert mux.pane_alive("surface:") is False     # malformed: no number
+        assert mux.pane_alive("surface:abc") is False  # malformed: non-numeric
+        assert log.read_text().strip() == ""  # capture-pane never invoked
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_send_keys_and_paste_skip_non_surface_ids(tmux_server, monkeypatch) -> None:
+    """Input paths share close-surface's focused-surface fallback: a stale or
+    cross-backend id ("%5", "") delivered via send-key / send / paste-buffer
+    would land keystrokes/text on the user's main tab. Guard them like
+    close-surface; a real ``surface:N`` still goes through."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-input"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        mux.send_keys("%5", "Enter")
+        mux.send_keys("", "Escape")
+        mux.paste_bracketed("%5", "stale text")
+        mux.send_text("", "more text")
+        assert log.read_text().strip() == ""  # cmux never invoked
+        mux.send_keys("surface:99", "Enter")
+        assert "send-key --surface surface:99 enter" in log.read_text()
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_pane_alive_false_for_dead_surface(tmux_server, monkeypatch) -> None:
+    """A well-formed but recycled/dead ``surface:N`` (the bug's root case) must
+    read as not-alive: cmux ``capture-pane`` on a missing surface exits
+    non-zero. Unlike the malformed-id case, capture-pane IS invoked here."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-dead"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    # exit 1 mimics capture-pane on a missing/recycled surface
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 1\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        assert mux.pane_alive("surface:239") is False
+        assert "capture-pane --surface surface:239" in log.read_text()
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_capture_returns_empty_for_non_surface_ids(tmux_server, monkeypatch) -> None:
+    """capture-pane with an empty --surface falls back to the focused surface,
+    so `cmt capture`/`modal` on a stale or malformed id would read the user's
+    main tab. _cmux_capture must fail closed (return "") without calling cmux."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-cap"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        for bad in ("%5", "", "surface:", "surface:abc"):
+            assert mux.capture(bad, mode="full") == ""
+        assert log.read_text().strip() == ""  # cmux never invoked
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
 def test_cmux_send_keys_routes_literal_chars_through_send(tmux_server, monkeypatch) -> None:
     """cmux ``send-key`` rejects literal characters ("Unknown key"), so a menu
     digit like "2" must go through ``cmux send`` (text), while named keys

@@ -92,6 +92,40 @@ def test_kill_removes_state_and_pane(tmp_path: Path, tmux_server, fake_claude) -
     assert not mux_mod.pane_alive(s.pane_id)
 
 
+def test_kill_skips_close_when_pane_not_alive(tmp_path: Path, monkeypatch) -> None:
+    """A stale state file (cmux restarted → surface ids recycled, or a foreign
+    / cross-backend id) must NOT drive a blind close — cmux's close-surface
+    falls back to the focused surface (the user's main tab) when it can't
+    resolve the id. kill drops the state without touching the mux."""
+    from cmt import mux as mux_mod
+    s = state.AgentState(
+        name="stale", agent="claude", agent_id="x", pane_id="surface:239",
+        cwd="/tmp", started_at="2026-05-29T00:00:00Z",
+    )
+    state.save(s, state_dir=tmp_path / "state")
+    calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "pane_alive", lambda p: False)
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
+    kill_op.kill("stale", state_dir=tmp_path / "state")
+    assert calls == []  # never closed anything
+    assert state.load("stale", state_dir=tmp_path / "state") is None  # state dropped
+
+
+def test_kill_closes_pane_when_alive(tmp_path: Path, monkeypatch) -> None:
+    from cmt import mux as mux_mod
+    s = state.AgentState(
+        name="live", agent="claude", agent_id="x", pane_id="surface:7",
+        cwd="/tmp", started_at="2026-05-29T00:00:00Z",
+    )
+    state.save(s, state_dir=tmp_path / "state")
+    calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "pane_alive", lambda p: True)
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
+    kill_op.kill("live", state_dir=tmp_path / "state")
+    assert calls == ["surface:7"]
+    assert state.load("live", state_dir=tmp_path / "state") is None
+
+
 def test_kill_missing_is_idempotent(tmp_path: Path, tmux_server) -> None:
     kill_op.kill("ghost", state_dir=tmp_path / "state")  # must not raise
 
@@ -101,3 +135,45 @@ def test_kill_all_removes_every_agent(tmp_path: Path, tmux_server, fake_claude) 
     spawn_op.spawn("claude", "bob",   cwd=str(tmp_path), state_dir=tmp_path / "state")
     kill_op.kill_all(state_dir=tmp_path / "state")
     assert state.list_all(state_dir=tmp_path / "state") == []
+
+
+def test_kill_all_skips_dead_panes(tmp_path: Path, monkeypatch) -> None:
+    """kill_all over a mix of live + stale agents (the post-restart scenario)
+    must close only the live ones — a stale surface:N must never be blind-closed."""
+    from cmt import mux as mux_mod
+    for nm, pane in (("live", "surface:7"), ("stale", "surface:239")):
+        state.save(
+            state.AgentState(
+                name=nm, agent="claude", agent_id="x", pane_id=pane,
+                cwd="/tmp", started_at="2026-05-29T00:00:00Z",
+            ),
+            state_dir=tmp_path / "state",
+        )
+    calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "pane_alive", lambda p: p == "surface:7")
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
+    kill_op.kill_all(state_dir=tmp_path / "state")
+    assert calls == ["surface:7"]  # stale surface:239 never closed
+    assert state.list_all(state_dir=tmp_path / "state") == []
+
+
+def test_spawn_replace_skips_close_when_pane_not_alive(tmp_path: Path, monkeypatch) -> None:
+    """spawn --replace over a stale/dead pane must drop the old state without a
+    blind close — the same focused-surface hazard kill() guards against."""
+    from cmt import mux as mux_mod
+    state.save(
+        state.AgentState(
+            name="alice", agent="claude", agent_id="old", pane_id="surface:239",
+            cwd="/tmp", started_at="2026-05-29T00:00:00Z",
+        ),
+        state_dir=tmp_path / "state",
+    )
+    monkeypatch.setenv("TMUX_PANE", "%0")
+    calls: list[str] = []
+    monkeypatch.setattr(mux_mod, "pane_alive", lambda p: False)
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: calls.append(p))
+    monkeypatch.setattr(mux_mod, "split_pane", lambda *a, **k: "surface:300")
+    s = spawn_op.spawn("claude", "alice", cwd=str(tmp_path), replace=True,
+                       state_dir=tmp_path / "state")
+    assert calls == []  # stale old pane never closed
+    assert s.pane_id == "surface:300"
