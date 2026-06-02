@@ -43,6 +43,10 @@ def _hooks(hl: int) -> str:
 
 UPDATE = _update(1)          # boot default highlights the dangerous "Update now"
 UPDATE_SEL = _update(2)      # after pressing "2", highlight on "Skip"
+# codex prints the banner, THEN the async update check pops the modal — so the
+# banner is already in the (full-history) capture while the modal still blocks.
+UPDATE_BANNER = f"OpenAI Codex (booted)\n\n{UPDATE}"
+UPDATE_SEL_BANNER = f"OpenAI Codex (booted)\n\n{UPDATE_SEL}"
 HOOKS = _hooks(1)            # boot default highlights "Review hooks"
 HOOKS_SEL = _hooks(2)        # after pressing "2", highlight on "Trust all"
 BANNER = f"{BANNER_MARKER} (v0.135.0)\n› Implement {{feature}}"
@@ -84,6 +88,16 @@ def test_update_modal_picks_skip_never_update_now() -> None:
     io = _FakeIO([UPDATE, UPDATE_SEL, BANNER])
     run_codex_warmup(capture=io.capture, send_key=io.keys, deadline_s=2.0, poll_interval=0.01)
     # "Skip" is option 2 — we must select 2, never the highlighted default (1).
+    assert io.keys_sent == ["2", "Enter"]
+
+
+def test_update_modal_answered_even_when_banner_already_in_capture() -> None:
+    """Regression: codex prints the banner before the async update check pops
+    the 'Update available!' modal. With full-history capture the banner is on
+    screen while the modal blocks — warmup must still pick Skip, not return on
+    the banner and strand the modal on 'Press enter to continue'."""
+    io = _FakeIO([UPDATE_BANNER, UPDATE_SEL_BANNER, BANNER])
+    run_codex_warmup(capture=io.capture, send_key=io.keys, deadline_s=2.0, poll_interval=0.01)
     assert io.keys_sent == ["2", "Enter"]
 
 

@@ -57,18 +57,31 @@ def run_codex_warmup(
 
     while True:
         screen = capture()
-        if BANNER_MARKER in screen:
-            return
 
+        # Answer a live selection modal *before* trusting the banner. codex
+        # prints its "OpenAI Codex" banner and only then runs the async update
+        # check, so a blocking "Update available!" modal routinely sits on
+        # screen with the banner already in the (full-history) capture.
+        # Returning on the banner here would strand that modal — the agent hangs
+        # on "Press enter to continue". So while a modal we can pick is still
+        # being dismissed (busy), we keep working it and ignore the banner.
         m = _modal.detect(screen)
+        busy = False
         if m is not None:
             last_modal = m
             choice = _pick(m)
             if choice is not None:
                 _advance(m, choice, progress, send_key)
+                # Still mid-dismissal until the option is confirmed ("done").
+                # A "done" modal lingering in scrollback no longer blocks the
+                # banner, so warmup can finish.
+                busy = progress.get(m.options) != "done"
         else:
             # No modal on screen — reset so a fresh occurrence fires again.
             progress.clear()
+
+        if not busy and BANNER_MARKER in screen:
+            return
 
         if time.monotonic() >= deadline:
             detail = f" last modal options={last_modal.options}" if last_modal else ""
