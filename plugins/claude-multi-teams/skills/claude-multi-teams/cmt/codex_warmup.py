@@ -41,7 +41,11 @@ _PICK_SUBSTRINGS: tuple[str, ...] = (
 def run_codex_warmup(
     capture: Callable[[], str],
     send_key: Callable[[str], None],
-    deadline_s: float = 20.0,
+    # 60s, not 20: with several codex spawning at once (plus image-gen load on
+    # the same box) the banner routinely takes >20s to render — 2026-06-11 saw
+    # 3 of 4 parallel spawns die at 20s. The deadline is only an upper bound;
+    # a healthy pane still returns as soon as the banner appears.
+    deadline_s: float = 60.0,
     poll_interval: float = 0.3,
 ) -> None:
     """Poll ``capture()`` until ``BANNER_MARKER`` is on screen, answering any

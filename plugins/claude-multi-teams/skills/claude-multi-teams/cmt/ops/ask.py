@@ -93,22 +93,48 @@ def _ask_inner(name, prompt, s, spec, state_dir):
 # codex first-ask: total sends = _FIRST_ASK_RESENDS + 1, each waiting up to
 # _FIRST_ASK_PER_TRY for the rollout. A successful paste writes the rollout in
 # well under a second; the window only needs to outlast a freshly-spawned
-# pane's settle under concurrent load.
-_FIRST_ASK_RESENDS = 2
+# pane's settle under concurrent load. Enter-only retries are cheap, so the
+# budget is generous — under parallel image-gen load a pane can swallow
+# several Enters in a row before one registers.
+_FIRST_ASK_RESENDS = 4
 _FIRST_ASK_PER_TRY = 5.0
+
+
+def _composer_holds_prompt(s, prompt) -> bool:
+    """Whether the pasted prompt is sitting unsubmitted in the composer.
+
+    Distinguishes the two first-ask failure modes: Enter swallowed mid-ingest
+    (the paste is visible in the composer) vs the paste itself dropped on a
+    not-yet-ready pane (composer empty). We only call this when no rollout
+    appeared, i.e. the prompt was definitely not submitted — so prompt text on
+    screen can only be composer content, not transcript echo.
+    """
+    try:
+        screen = mux.capture(s.pane_id)
+    except Exception:
+        return False
+    # Large pastes render as a "[Pasted Content N chars]" widget.
+    if "Pasted Content" in screen:
+        return True
+    head = prompt.strip().splitlines()[0][:40].strip() if prompt.strip() else ""
+    return bool(head) and head in screen
 
 
 def _send_until_session(s, prompt, spec, ctx):
     """Send the first prompt and wait for codex to write its rollout; if it
-    doesn't appear, the paste was dropped on a not-yet-ready pane — clear any
-    partial composer text and re-send. Returns the resolved session path, or
-    None after exhausting resends."""
+    doesn't appear, recover according to what actually failed: if the paste is
+    still composed (Enter was swallowed) press Enter again — re-pasting would
+    stack "[Pasted Content] #2 #3" and submit the prompt several times over —
+    otherwise the paste was dropped, so clear the composer and re-send.
+    Returns the resolved session path, or None after exhausting resends."""
     for attempt in range(_FIRST_ASK_RESENDS + 1):
-        if attempt > 0:
-            # A prior paste may have half-landed (text in the composer, Enter
-            # swallowed). Clear the line first so the re-paste can't double it.
+        if attempt == 0:
+            mux.send_text(s.pane_id, prompt)
+        elif _composer_holds_prompt(s, prompt):
+            mux.send_keys(s.pane_id, "Enter")
+        else:
             mux.send_keys(s.pane_id, "C-u")
-        mux.send_text(s.pane_id, prompt)
+            mux.send_text(s.pane_id, prompt)
         found = spec.resolve_session_file(ctx, s.spawn_marker, timeout=_FIRST_ASK_PER_TRY)
         if found is not None:
             return found

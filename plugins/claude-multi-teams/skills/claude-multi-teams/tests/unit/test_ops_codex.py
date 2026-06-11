@@ -126,9 +126,8 @@ def test_kill_codex_removes_agent_home(tmp_path: Path, tmux_server, fake_codex) 
 
 def test_first_ask_resends_when_paste_dropped(monkeypatch) -> None:
     """A freshly-spawned pane can drop the first paste before it's input-ready
-    (the concurrent-spawn readiness race). _send_until_session must re-send
-    until the rollout appears, clearing the composer before each resend so the
-    prompt can't be doubled."""
+    (the concurrent-spawn readiness race). With an empty composer on screen,
+    _send_until_session must clear and re-paste until the rollout appears."""
     from cmt.ops import ask as ask_mod
 
     sent_text: list[str] = []
@@ -136,6 +135,7 @@ def test_first_ask_resends_when_paste_dropped(monkeypatch) -> None:
     monkeypatch.setattr(ask_mod.mux, "send_text", lambda pane, txt: sent_text.append(txt))
     monkeypatch.setattr(ask_mod.mux, "send_keys", lambda pane, *k: keys.extend(k))
     monkeypatch.setattr(ask_mod.mux, "pane_alive", lambda pane: True)
+    monkeypatch.setattr(ask_mod.mux, "capture", lambda pane: "")  # paste never landed
 
     calls = {"n": 0}
 
@@ -152,6 +152,37 @@ def test_first_ask_resends_when_paste_dropped(monkeypatch) -> None:
     assert len(sent_text) == 3            # initial + 2 resends
     assert keys == ["C-u", "C-u"]         # composer cleared before each resend
     assert sent_text == ["hello", "hello", "hello"]
+
+
+def test_first_ask_represses_enter_when_paste_composed(monkeypatch) -> None:
+    """When the paste landed but Enter was swallowed mid-ingest, the composer
+    shows the pasted prompt ('[Pasted Content N chars]'). Re-pasting there
+    stacks duplicates (#2 #3) and a late Enter submits them all — so the retry
+    must press Enter only, never re-paste (2026-06-11 incident)."""
+    from cmt.ops import ask as ask_mod
+
+    sent_text: list[str] = []
+    keys: list[str] = []
+    monkeypatch.setattr(ask_mod.mux, "send_text", lambda pane, txt: sent_text.append(txt))
+    monkeypatch.setattr(ask_mod.mux, "send_keys", lambda pane, *k: keys.extend(k))
+    monkeypatch.setattr(ask_mod.mux, "pane_alive", lambda pane: True)
+    monkeypatch.setattr(
+        ask_mod.mux, "capture", lambda pane: "› [Pasted Content 1179 chars]"
+    )
+
+    calls = {"n": 0}
+
+    class Spec:
+        def resolve_session_file(self, ctx, marker, timeout):
+            calls["n"] += 1
+            return "/sessions/rollout-x.jsonl" if calls["n"] >= 3 else None
+
+    s = type("S", (), {"pane_id": "%1", "spawn_marker": "0.0"})()
+    got = ask_mod._send_until_session(s, "hello", Spec(), ctx=None)
+
+    assert got == "/sessions/rollout-x.jsonl"
+    assert sent_text == ["hello"]         # pasted exactly once
+    assert keys == ["Enter", "Enter"]     # retries are Enter-only
 
 
 def test_first_ask_gives_up_if_pane_dies(monkeypatch) -> None:
