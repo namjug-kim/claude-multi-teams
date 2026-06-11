@@ -90,8 +90,18 @@ def spawn(
     session_file = spec.session_file(ctx, env_vars)
 
     # Run agent-specific spawn-time warmup (e.g., codex Trust-folder modal).
+    # On failure, close the pane we just opened: no state is saved for it, so
+    # nothing else can ever clean it up — leaked panes shrink every subsequent
+    # split until new agents' TUIs can't even render (warmup death spiral).
     if spec.post_spawn_warmup is not None:
-        spec.post_spawn_warmup(ctx, pane_id)
+        try:
+            spec.post_spawn_warmup(ctx, pane_id)
+        except BaseException:
+            try:
+                mux.kill_pane(pane_id)
+            except Exception:
+                pass
+            raise
 
     s = state.AgentState(
         name=name,

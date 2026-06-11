@@ -77,6 +77,14 @@ def test_banner_already_present_returns_immediately() -> None:
     assert io.keys_sent == []
 
 
+def test_banner_wrapped_by_narrow_pane_still_matches() -> None:
+    """In a narrow pane the banner hard-wraps mid-word ("OpenAI Cod\\nex"); the
+    match must be whitespace-collapsed or warmup times out on a live codex."""
+    io = _FakeIO(["OpenAI Cod\nex (v0.135.\n0)\n› Imple\nment"])
+    run_codex_warmup(capture=io.capture, send_key=io.keys, deadline_s=2.0, poll_interval=0.01)
+    assert io.keys_sent == []
+
+
 def test_trust_modal_selects_yes_then_banner() -> None:
     # poll 1: digit "1"; poll 2: same modal -> "Enter"; poll 3: banner.
     io = _FakeIO([TRUST, TRUST, BANNER])

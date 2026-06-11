@@ -38,6 +38,38 @@ def test_spawn_codex_warmup_completes(tmp_path: Path, tmux_server, fake_codex) -
     assert s.pane_id.startswith("%")
 
 
+def test_spawn_kills_pane_when_warmup_fails(
+    tmp_path: Path, tmux_server, fake_codex, monkeypatch
+) -> None:
+    """A warmup failure must close the pane it opened: no state is saved for
+    it, so nothing else can ever clean it up — leaked panes shrink every later
+    split until new agents' TUIs can't render and every spawn times out."""
+    import dataclasses
+
+    from cmt import agents, mux
+
+    killed: list[str] = []
+    real_kill = mux.kill_pane
+    monkeypatch.setattr(
+        mux, "kill_pane", lambda p: (killed.append(p), real_kill(p))[1]
+    )
+
+    def boom(ctx, pane_id):
+        raise TimeoutError("banner never appeared")
+
+    monkeypatch.setitem(
+        agents.AGENTS,
+        "codex",
+        dataclasses.replace(agents.AGENTS["codex"], post_spawn_warmup=boom),
+    )
+    with pytest.raises(TimeoutError):
+        spawn_op.spawn("codex", "alice", cwd=str(tmp_path), state_dir=tmp_path / "state")
+
+    assert len(killed) == 1                      # the leaked pane was closed
+    assert not mux.pane_alive(killed[0])
+    assert state.load("alice", state_dir=tmp_path / "state") is None
+
+
 def test_ask_first_turn_resolves_session_file_and_returns_text(
     tmp_path: Path, tmux_server, fake_codex
 ) -> None:

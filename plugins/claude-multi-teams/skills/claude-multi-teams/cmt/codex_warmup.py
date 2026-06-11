@@ -27,6 +27,9 @@ from cmt import modal as _modal
 
 # Marker that proves codex's TUI banner has rendered.
 BANNER_MARKER = "OpenAI Codex"
+# Matched against the whitespace-collapsed screen so a banner wrapped by a
+# narrow pane still counts.
+_BANNER_SQUASHED = "".join(BANNER_MARKER.split())
 
 # Ordered option-label substrings to pick, by preference. For a detected modal
 # we choose the first option whose label contains one of these. Extend as new
@@ -84,7 +87,10 @@ def run_codex_warmup(
             # No modal on screen — reset so a fresh occurrence fires again.
             progress.clear()
 
-        if not busy and BANNER_MARKER in screen:
+        # Whitespace-collapsed match: in a narrow pane the banner wraps
+        # ("OpenAI Cod\nex"), so a literal substring test never fires even
+        # though codex is up.
+        if not busy and _BANNER_SQUASHED in "".join(screen.split()):
             return
 
         if time.monotonic() >= deadline:
