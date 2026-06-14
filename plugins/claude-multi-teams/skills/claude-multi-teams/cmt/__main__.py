@@ -60,9 +60,22 @@ def _cmd_spawn(args) -> int:
     return 0
 
 
+def _run_ask(fn, name: str, prompt: str) -> int:
+    """Emit a reply or surface a blocked turn as parseable stderr."""
+    try:
+        _emit(fn(name, _read_prompt(prompt)))
+        return 0
+    except ask_op.BlockedOnInput as e:
+        if e.text:
+            _emit(e.text)
+        payload = {"blocked": True, "agent": e.name, "question": e.question}
+        print("[cmt:blocked] " + json.dumps(payload, ensure_ascii=False),
+              file=sys.stderr)
+        return 3
+
+
 def _cmd_ask(args) -> int:
-    _emit(ask_op.ask(args.name, _read_prompt(args.prompt)))
-    return 0
+    return _run_ask(ask_op.ask, args.name, args.prompt)
 
 
 def _cmd_kill(args) -> int:
@@ -178,8 +191,7 @@ def _wf_role_get(args) -> int:
 
 
 def _wf_ask(args) -> int:
-    _emit(wf_ask_op.ask(args.name, _read_prompt(args.prompt)))
-    return 0
+    return _run_ask(wf_ask_op.ask, args.name, args.prompt)
 
 
 def _wf_put(args) -> int:

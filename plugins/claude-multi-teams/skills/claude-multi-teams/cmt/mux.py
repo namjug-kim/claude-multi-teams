@@ -39,17 +39,25 @@ def _use_cmux_native() -> bool:
 
     - ``$TMUX`` starting with the cmux-claude-teams fake path (the outer
       shell our user starts cmt from has this set), OR
-    - ``$CMUX_SOCKET_PATH`` is set (panes that cmux itself spawned —
-      including the ones cmt creates for sibling agents — inherit this
-      from cmux's daemon env but do NOT inherit ``$TMUX``).
+    - ``$TMUX`` is absent and ``$CMUX_SOCKET_PATH`` is set (panes that cmux
+      itself spawned — including the ones cmt creates for sibling agents —
+      inherit this from cmux's daemon env but do NOT inherit ``$TMUX``).
 
     Without the second check, a sibling agent invoking cmt back from its
     own Bash tool would fall through to the tmux path and try to find
     cmux-shaped ``surface:N`` ids via ``tmux list-panes`` — which fails,
     surfacing as a false "pane is dead".
+
+    If ``$TMUX`` points at a real tmux server, that is authoritative even when
+    a stale ``$CMUX_SOCKET_PATH`` leaks into the environment. Otherwise cmt
+    will route through cmux, fail on the stale socket, and be unable to spawn
+    or talk to sibling agents from an otherwise healthy tmux session.
     """
-    if os.environ.get("TMUX", "").startswith("/tmp/cmux-claude-teams"):
+    tmux = os.environ.get("TMUX", "")
+    if tmux.startswith("/tmp/cmux-claude-teams"):
         return True
+    if tmux:
+        return False
     if os.environ.get("CMUX_SOCKET_PATH"):
         return True
     return False
@@ -118,6 +126,68 @@ def _tmux_list_panes() -> list[str]:
     if res.returncode != 0:
         return []
     return [p for p in res.stdout.split() if p]
+
+
+def _process_ancestors(pid: int | None = None) -> set[int]:
+    """Return this process's PID ancestry, best effort.
+
+    A tmux pane's ``pane_pid`` is the shell/process at the root of that pane.
+    If cmt is really running inside that pane, the pane pid should appear in
+    this process's ancestor chain. This is more reliable than ``$TMUX_PANE``
+    when shells leak stale env, and more reliable than tmux's selected pane
+    when ``split-window`` has moved focus to a sibling.
+    """
+    out: set[int] = set()
+    cur = pid or os.getpid()
+    for _ in range(64):
+        if cur <= 1 or cur in out:
+            break
+        out.add(cur)
+        res = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(cur)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            break
+        try:
+            cur = int(res.stdout.strip())
+        except ValueError:
+            break
+    return out
+
+
+def _tmux_current_pane() -> str | None:
+    """Best-effort pane cmt is currently running in.
+
+    ``$TMUX_PANE`` is inherited shell state and can become stale when cmt is
+    invoked from nested shells or after pane reuse. tmux's selected pane can
+    also be wrong after cmt spawns a sibling. Prefer the pane whose root pid is
+    in this process's ancestor chain; fall back to a live env var only when the
+    process ancestry cannot be matched. tmux's selected pane is intentionally
+    not used: non-tty callers can inherit a tmux server while the selected pane
+    is a sibling agent, which would make ``kill`` falsely think the target is
+    the orchestrator.
+    """
+    ancestors = _process_ancestors()
+    res = _tmux("list-panes", "-a", "-F", "#{pane_id} #{pane_pid}", check=False)
+    if res.returncode == 0:
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            pane, raw_pid = parts
+            try:
+                pane_pid = int(raw_pid)
+            except ValueError:
+                continue
+            if pane_pid in ancestors:
+                return pane
+    env_pane = os.environ.get("TMUX_PANE") or None
+    if env_pane and _tmux_pane_alive(env_pane):
+        return env_pane
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -387,9 +457,11 @@ def list_panes() -> list[str]:
 
 
 def current_pane() -> str | None:
-    """The pane cmt is running in (tmux ``$TMUX_PANE``) or the focused cmux
-    surface ref. Used by ``kill`` to refuse closing the orchestrator's own
-    pane — a stale/recycled ``surface:N`` ref can otherwise point here."""
+    """The pane cmt is running in or the focused cmux surface ref.
+
+    Used by ``kill`` to refuse closing the orchestrator's own pane — a
+    stale/recycled mux ref can otherwise point here.
+    """
     if _use_cmux_native():
         return _cmux_current_pane()
-    return os.environ.get("TMUX_PANE") or None
+    return _tmux_current_pane()

@@ -49,6 +49,10 @@ class AgentSpec:
     # overriding any propagated vars. codex uses it to point CODEX_HOME at a
     # per-agent dir so its rollout sessions tree is isolated from siblings.
     spawn_env: Callable[["SpawnContext"], dict[str, str]] | None = None
+    # Optional hook called at the start of every ``ask``, before the prompt is
+    # typed, to clear any between-turn overlay occupying the composer.
+    # Signature: (state) -> None.
+    pre_send: Callable[..., None] | None = None
     # Per-agent done / status / extract dispatch. Defaults wired below to the
     # claude (jsonl + stop_reason) strategy.
     await_done: Callable[..., "object"] | None = None
@@ -182,9 +186,20 @@ def _build_agents() -> dict[str, AgentSpec]:
     def _path(state):
         return _Path(state.session_file)
 
-    # claude — jsonl + stop_reason
+    # claude — jsonl + stop_reason, with screen-based survey dismissal
+    from cmt import claude_screen as _claude_screen, mux as _mux_c
+
+    def _claude_dismiss_survey(state):
+        _claude_screen.dismiss_survey_if_present(
+            capture=lambda: _mux_c.capture(state.pane_id, mode="full"),
+            send_keys=lambda *keys: _mux_c.send_keys(state.pane_id, *keys),
+        )
+
     def _claude_await(state, is_alive):
-        return _strategies.await_jsonl_done(_path(state), state.baseline_offset, is_alive)
+        return _strategies.await_jsonl_done(
+            _path(state), state.baseline_offset, is_alive,
+            on_poll=lambda: _claude_dismiss_survey(state),
+        )
 
     def _claude_status(state, pane_alive):
         return _strategies.status_jsonl(_path(state), state.baseline_offset, pane_alive)
@@ -229,6 +244,7 @@ def _build_agents() -> dict[str, AgentSpec]:
             propagate_env_prefixes=("CLAUDE_", "ANTHROPIC_"),
             build_argv=_claude_argv,
             session_file=_claude_session_file,
+            pre_send=_claude_dismiss_survey,
             await_done=_claude_await,
             status_fn=_claude_status,
             extract_response=_claude_extract,

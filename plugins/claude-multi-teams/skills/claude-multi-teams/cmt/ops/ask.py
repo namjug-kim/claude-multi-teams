@@ -6,8 +6,20 @@ import dataclasses
 import time
 from pathlib import Path
 
-from cmt import agents, callchain, mux, state
+from cmt import agents, callchain, mux, state, strategies
 from cmt.ops import status as status_op
+
+
+class BlockedOnInput(RuntimeError):
+    """The agent parked on an interactive tool and needs user input."""
+
+    def __init__(self, name: str, question: dict | None, text: str):
+        self.name = name
+        self.question = question
+        self.text = text
+        super().__init__(
+            f"agent {name!r} is blocked awaiting input; answer it before retrying"
+        )
 
 
 def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
@@ -50,6 +62,9 @@ def ask(name: str, prompt: str, state_dir: Path | None = None) -> str:
 
 
 def _ask_inner(name, prompt, s, spec, state_dir):
+    if spec.pre_send is not None:
+        spec.pre_send(s)
+
     if s.session_file is None and spec.resolve_session_file is not None:
         # codex first-ask: the prompt must hit the agent before the rollout file
         # appears. A freshly-spawned pane can still be settling when we paste —
@@ -86,6 +101,13 @@ def _ask_inner(name, prompt, s, spec, state_dir):
     result = spec.await_done(s, lambda: mux.pane_alive(s.pane_id))
     if result == "dead":
         raise RuntimeError(f"agent {name!r} died during ask")
+    if result == "blocked":
+        question = None
+        if s.session_file is not None:
+            question = strategies.pending_question(
+                Path(s.session_file), s.baseline_offset
+            )
+        raise BlockedOnInput(name, question, spec.extract_response(s))
 
     return spec.extract_response(s)
 

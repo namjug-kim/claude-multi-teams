@@ -4,6 +4,7 @@
 
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -96,6 +97,94 @@ def test_list_panes_returns_known_panes(tmux_server) -> None:
     panes = mux.list_panes()
     assert parent in panes
     assert new_pane in panes
+
+
+def test_current_pane_prefers_process_ancestry_over_stale_env(monkeypatch) -> None:
+    """A stale inherited TMUX_PANE must not make kill() think a sibling pane is
+    the orchestrator. The pane whose root pid is in cmt's ancestry wins."""
+    monkeypatch.setenv("TMUX", "/tmp/tmux-test,0,0")
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    monkeypatch.setenv("TMUX_PANE", "%stale")
+
+    def fake_tmux(*args, **kwargs):
+        if args[:3] == ("list-panes", "-a", "-F"):
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                stdout="%actual 111\n%stale 222\n",
+                stderr="",
+            )
+        if args and args[0] == "display-message":
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                stdout="%selected\n",
+                stderr="",
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(mux, "_tmux", fake_tmux)
+    monkeypatch.setattr(mux, "_tmux_pane_alive", lambda pane: True)
+    monkeypatch.setattr(mux, "_process_ancestors", lambda: {111, 999})
+
+    assert mux.current_pane() == "%actual"
+
+
+def test_current_pane_falls_back_to_env_when_ancestry_unmatched(tmux_server, monkeypatch) -> None:
+    """When cmt cannot match process ancestry to a tmux pane, a live
+    TMUX_PANE remains the best available current-pane hint."""
+    parent = tmux_server
+    child = mux.split_pane(parent, cwd="/tmp", cmd="bash", env_vars={})
+    mux._tmux("select-pane", "-t", child)
+    monkeypatch.setenv("TMUX_PANE", parent)
+    assert mux.current_pane() == parent
+
+
+def test_current_pane_does_not_fall_back_to_selected_pane(monkeypatch) -> None:
+    """A non-tty caller may see a sibling as tmux's selected pane. Without
+    process ancestry or a live TMUX_PANE, current pane is unknown."""
+    monkeypatch.setenv("TMUX", "/tmp/tmux-test,0,0")
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    monkeypatch.setenv("TMUX_PANE", "%dead")
+
+    def fake_tmux(*args, **kwargs):
+        if args[:3] == ("list-panes", "-a", "-F"):
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                stdout="%selected 222\n",
+                stderr="",
+            )
+        if args and args[0] == "display-message":
+            raise AssertionError("selected pane fallback must not be used")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(mux, "_tmux", fake_tmux)
+    monkeypatch.setattr(mux, "_tmux_pane_alive", lambda pane: False)
+    monkeypatch.setattr(mux, "_process_ancestors", lambda: {999})
+
+    assert mux.current_pane() is None
+
+
+def test_real_tmux_wins_over_stale_cmux_socket_path(tmux_server, monkeypatch) -> None:
+    """A real tmux session is authoritative even if cmux env leaks in.
+
+    In this state cmt must stay on the tmux backend. Routing through cmux makes
+    otherwise valid tmux sessions unusable when the inherited cmux socket is
+    stale or broken.
+    """
+    parent = tmux_server
+    monkeypatch.setenv("CMUX_SOCKET_PATH", "/tmp/stale-cmux.sock")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-stale-cmux"
+    fake_bin.mkdir(exist_ok=True)
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text("#!/bin/sh\nexit 77\n")
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        assert parent in mux.list_panes()
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
 
 
 def test_kill_pane_idempotent_on_missing(tmux_server) -> None:
