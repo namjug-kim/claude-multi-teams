@@ -248,8 +248,19 @@ def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, s
     ``parent_pane`` is ignored; cmux defaults to ``$CMUX_WORKSPACE_ID``.
     ``cwd`` is folded into the command (``cd && …``) since new-pane has
     no --cwd flag either.
+
+    Opt-in isolation: if ``$CMT_SPAWN_WORKSPACE`` is set, the new pane is
+    created in that workspace instead of the caller's current one. Lets a
+    batch driver (e.g. codex gallery) confine its workers to a dedicated,
+    atomically-torn-down workspace so they never compete for the
+    orchestrator workspace's split cap or leak orphans into it. Unset =
+    unchanged default behavior.
     """
-    res = _cmux("new-pane", "--direction", "right")
+    new_pane_args = ["new-pane", "--direction", "right"]
+    _spawn_ws = os.environ.get("CMT_SPAWN_WORKSPACE")
+    if _spawn_ws:
+        new_pane_args += ["--workspace", _spawn_ws]
+    res = _cmux(*new_pane_args)
     # output format: "OK surface:58 pane:53 workspace:1\n"
     surface_ref = next(tok for tok in res.stdout.split() if tok.startswith("surface:"))
 
