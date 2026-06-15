@@ -80,7 +80,10 @@ def _claude_session_file(ctx: SpawnContext, env: dict[str, str]) -> str:
     # jsonl lands under "-private-tmp-x". Match that by resolving symlinks
     # here — otherwise we track a path that never grows and every turn looks
     # like it "never started".
-    cwd_dashed = os.path.realpath(ctx.cwd).replace("/", "-")
+    # Claude also replaces dots in the canonical cwd slug. This matters for
+    # cmux worktrees such as "~/.cmux-worktrees/...", where tracking the
+    # slash-only slug leaves cmt watching a jsonl path that never exists.
+    cwd_dashed = os.path.realpath(ctx.cwd).replace("/", "-").replace(".", "-")
     return f"{base}/projects/{cwd_dashed}/{ctx.session_uuid}.jsonl"
 
 
