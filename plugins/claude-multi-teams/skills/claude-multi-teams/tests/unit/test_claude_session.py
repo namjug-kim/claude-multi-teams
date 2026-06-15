@@ -20,7 +20,20 @@ def test_claude_session_file_resolves_symlinked_cwd(tmp_path: Path, monkeypatch)
                               session_uuid="uuid123")
     got = agents._claude_session_file(ctx, {})
 
-    canonical_slug = os.path.realpath(str(link)).replace("/", "-")
+    canonical_slug = os.path.realpath(str(link)).replace("/", "-").replace(".", "-")
     assert f"/projects/{canonical_slug}/uuid123.jsonl" in got
     assert canonical_slug.endswith("real_project")   # resolved to the target
     assert "link_project" not in got                 # not the symlink name
+
+
+def test_claude_session_file_replaces_dots_in_cwd_slug(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    cwd = tmp_path / ".cmux-worktrees" / "repo"
+    cwd.mkdir(parents=True)
+
+    ctx = agents.SpawnContext(name="a", agent_id="id", cwd=str(cwd),
+                              session_uuid="uuid123")
+    got = agents._claude_session_file(ctx, {})
+
+    assert ".cmux-worktrees" not in got
+    assert "--cmux-worktrees-" in got
