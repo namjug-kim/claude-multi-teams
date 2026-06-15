@@ -49,10 +49,11 @@ def spawn(
             mux.kill_pane(existing.pane_id)
         state.remove(name, state_dir=state_dir)
 
-    parent = parent_pane or os.environ.get("TMUX_PANE")
+    parent = parent_pane or os.environ.get("TMUX_PANE") or mux.current_pane()
     if not parent:
         raise RuntimeError(
-            "no parent pane: cmt spawn must run inside a tmux pane (or set TMUX_PANE)."
+            "no parent pane: cmt spawn must run inside a tmux/cmux pane "
+            "(or set TMUX_PANE)."
         )
 
     agent_id = uuid.uuid4().hex[:16]

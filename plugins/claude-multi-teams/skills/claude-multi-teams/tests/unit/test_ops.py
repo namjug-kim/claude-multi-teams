@@ -44,10 +44,33 @@ def test_spawn_replace_kills_old(tmp_path: Path, tmux_server, fake_claude) -> No
 
 
 def test_spawn_requires_parent_pane(tmp_path: Path, monkeypatch, fake_claude) -> None:
+    from cmt import mux as mux_mod
     monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: None)
     with pytest.raises(RuntimeError):
         spawn_op.spawn("claude", "alice", cwd=str(tmp_path), state_dir=tmp_path / "state")
+
+
+def test_spawn_uses_current_pane_when_tmux_pane_missing(tmp_path: Path, monkeypatch) -> None:
+    from cmt import mux as mux_mod
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: "surface:2581")
+
+    parents: list[str] = []
+
+    def fake_split_pane(parent, cwd, cmd, env_vars):
+        parents.append(parent)
+        return "surface:300"
+
+    monkeypatch.setattr(mux_mod, "split_pane", fake_split_pane)
+
+    s = spawn_op.spawn("claude", "alice", cwd=str(tmp_path), state_dir=tmp_path / "state")
+
+    assert parents == ["surface:2581"]
+    assert s.pane_id == "surface:300"
 
 
 def test_ask_returns_assistant_text(tmp_path: Path, tmux_server, fake_claude) -> None:
