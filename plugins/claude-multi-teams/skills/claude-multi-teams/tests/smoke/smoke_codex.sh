@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for real codex agent under cmux claude-teams. Mirrors smoke_cmux.sh
+# Smoke test for real codex agent under cmux teams. Mirrors smoke_cmux.sh
 # for claude. Verifies:
 #   - codex spawn with bypass flags
 #   - post_spawn_warmup dismisses the Trust-folder modal (if it appears) and
@@ -9,11 +9,11 @@
 #   - whoami via codex's shell tool (codex runs in YOLO mode under these
 #     flags, so it can shell out without approval)
 #
-# Requires: running inside `cmux claude-teams` AND real codex binary on PATH.
+# Requires: running inside cmux teams AND real codex binary on PATH.
 set -euo pipefail
 
-if [[ "${TMUX:-}" != /tmp/cmux-claude-teams/* ]]; then
-  echo "smoke_codex: not inside cmux claude-teams (TMUX=${TMUX:-unset}); skipping"
+if [[ "${TMUX:-}" != /tmp/cmux-*/* && -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "smoke_codex: not inside cmux teams (TMUX=${TMUX:-unset}, CMUX_SOCKET_PATH=${CMUX_SOCKET_PATH:-unset}); skipping"
   exit 0
 fi
 if ! command -v codex >/dev/null 2>&1; then

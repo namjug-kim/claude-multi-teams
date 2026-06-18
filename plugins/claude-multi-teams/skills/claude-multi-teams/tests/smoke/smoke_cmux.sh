@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Smoke test under cmux claude-teams. Verifies the cmux-native backend:
+# Smoke test under cmux teams. Verifies the cmux-native backend:
 # spawn creates a real cmux surface (visible in `cmux tree`), ask round-trips,
 # and `cmt whoami` invoked from inside the spawned agent's Bash tool resolves
 # correctly via the propagated CMT_AGENT_ID + CMT_STATE_DIR env.
 #
-# Requires: running inside `cmux claude-teams` (so $TMUX starts with the
-# fake "/tmp/cmux-claude-teams/" path). Falls back to skip otherwise.
+# Requires: running inside a cmux teams mode (so $TMUX starts with a fake
+# "/tmp/cmux-<mode>/" path, or $CMUX_SOCKET_PATH is set). Falls back to skip
+# otherwise.
 set -euo pipefail
 
-if [[ "${TMUX:-}" != /tmp/cmux-claude-teams/* ]]; then
-  echo "smoke_cmux: not inside cmux claude-teams (TMUX=${TMUX:-unset}); skipping"
+if [[ "${TMUX:-}" != /tmp/cmux-*/* && -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "smoke_cmux: not inside cmux teams (TMUX=${TMUX:-unset}, CMUX_SOCKET_PATH=${CMUX_SOCKET_PATH:-unset}); skipping"
   exit 0
 fi
 

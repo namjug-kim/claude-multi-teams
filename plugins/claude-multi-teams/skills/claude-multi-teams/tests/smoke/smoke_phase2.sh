@@ -10,7 +10,7 @@ mkdir -p "$STATE_DIR"
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 CMT="$SKILL_DIR/bin/cmt"
 
-# Inside cmux claude-teams, `tmux` on PATH is the shim. We need the real tmux
+# Inside cmux teams, `tmux` on PATH is the shim. We need the real tmux
 # binary to host a separate test server (matches conftest.py unit-test setup).
 TMUX_BIN=/opt/homebrew/bin/tmux
 [[ -x "$TMUX_BIN" ]] || TMUX_BIN=$(command -v tmux)
@@ -26,11 +26,10 @@ trap cleanup EXIT
 unset CMUX_SOCKET_PATH
 # Strip the cmux tmux shim from PATH so cmt's own tmux subprocess calls
 # resolve to real tmux.
-SHIM_DIR="$HOME/.cmuxterm/claude-teams-bin"
 NEWPATH="/opt/homebrew/bin"
 IFS=: read -r -a _parts <<< "$PATH"
 for p in "${_parts[@]}"; do
-  [[ "$p" == "$SHIM_DIR" || "$p" == "/opt/homebrew/bin" ]] && continue
+  [[ "$p" == "$HOME/.cmuxterm/"*-teams-bin || "$p" == "/opt/homebrew/bin" ]] && continue
   NEWPATH="$NEWPATH:$p"
 done
 export PATH="$NEWPATH"

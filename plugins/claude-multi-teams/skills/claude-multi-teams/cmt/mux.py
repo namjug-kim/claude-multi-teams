@@ -4,8 +4,9 @@ Two backends, dispatched at runtime per call:
 
 - **real tmux**  — when ``$TMUX`` is empty or points at a non-cmux server.
   We shell out to ``tmux``; the server is inherited from ``$TMUX``.
-- **cmux native** — when ``$TMUX`` points at the cmux ``claude-teams`` fake
-  tmux path (``/tmp/cmux-claude-teams/…``). The ``tmux`` shim on PATH can
+- **cmux native** — when ``$TMUX`` points at a cmux teams fake tmux path
+  (for example ``/tmp/cmux-claude-teams/…`` or
+  ``/tmp/cmux-codex-teams/…``). The ``tmux`` shim on PATH can
   spawn panes and send keys but its split-window outputs are *shim-only*
   pseudo-panes that don't show up in cmux's UI, and its ``paste-buffer``
   doesn't deliver bracketed paste to the receiving TUI. We bypass the shim
@@ -22,10 +23,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from typing import Literal
 
 CaptureMode = Literal["visible", "full", "wrapped"]
+_CMUX_TMUX_PATH_RE = re.compile(r"^/tmp/cmux-[^/,]+/")
 
 
 # ---------------------------------------------------------------------------
@@ -33,12 +36,24 @@ CaptureMode = Literal["visible", "full", "wrapped"]
 # ---------------------------------------------------------------------------
 
 
+def _tmux_points_at_cmux(tmux: str) -> bool:
+    """True when ``$TMUX`` names cmux's fake tmux socket path.
+
+    cmux team modes are named by the host app (``claude-teams``,
+    ``codex-teams``, ...), but the fake tmux socket keeps the stable
+    ``/tmp/cmux-<mode>/`` prefix. Treat the family as cmux instead of
+    hard-coding one mode name.
+    """
+    return bool(_CMUX_TMUX_PATH_RE.match(tmux))
+
+
 def _use_cmux_native() -> bool:
-    """True when we're inside cmux ``claude-teams`` and should bypass the
+    """True when we're inside cmux teams and should bypass the
     tmux shim. Detected by either:
 
-    - ``$TMUX`` starting with the cmux-claude-teams fake path (the outer
-      shell our user starts cmt from has this set), OR
+    - ``$TMUX`` starting with a cmux fake path such as
+      ``/tmp/cmux-claude-teams`` or ``/tmp/cmux-codex-teams`` (the outer
+      shell our user starts cmt from may have this set), OR
     - ``$TMUX`` is absent and ``$CMUX_SOCKET_PATH`` is set (panes that cmux
       itself spawned — including the ones cmt creates for sibling agents —
       inherit this from cmux's daemon env but do NOT inherit ``$TMUX``).
@@ -54,7 +69,7 @@ def _use_cmux_native() -> bool:
     or talk to sibling agents from an otherwise healthy tmux session.
     """
     tmux = os.environ.get("TMUX", "")
-    if tmux.startswith("/tmp/cmux-claude-teams"):
+    if _tmux_points_at_cmux(tmux):
         return True
     if tmux:
         return False
@@ -196,6 +211,28 @@ def _tmux_current_pane() -> str | None:
 
 
 _CMUX_LOCK_PATH = "/tmp/cmt-cmux.lock"
+_CMUX_ENV_VARS = ("CMT_CMUX_BIN", "CMUX_BIN", "CMUX_CLAUDE_HOOK_CMUX_BIN")
+_CMUX_BUNDLE_CANDIDATES = (
+    "/Applications/cmux.app/Contents/Resources/bin/cmux",
+    "/Applications/cmux.app/Contents/MacOS/cmux",
+)
+
+
+def _resolve_cmux_bin() -> str:
+    for env_var in _CMUX_ENV_VARS:
+        candidate = os.environ.get(env_var)
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+
+    found = shutil.which("cmux")
+    if found:
+        return found
+
+    for candidate in _CMUX_BUNDLE_CANDIDATES:
+        if os.access(candidate, os.X_OK):
+            return candidate
+
+    raise FileNotFoundError("cmux")
 
 
 def _cmux(*args: str, check: bool = True, capture: bool = True,
@@ -218,7 +255,7 @@ def _cmux(*args: str, check: bool = True, capture: bool = True,
     lock_fd = os.open(_CMUX_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        return subprocess.run(["cmux", *args], **kwargs)
+        return subprocess.run([_resolve_cmux_bin(), *args], **kwargs)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)

@@ -3,7 +3,7 @@
 #
 # Runs against a freshly-started real tmux server (so the tmux native paste
 # path is exercised, not the cmux bypass — that branch is tested separately
-# by launching from inside `cmux claude-teams`).
+# by launching from inside cmux teams).
 set -euo pipefail
 
 # Use short /tmp paths — Unix socket name limit is 104 bytes on macOS.
@@ -14,7 +14,7 @@ mkdir -p "$STATE_DIR"
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 CMT="$SKILL_DIR/bin/cmt"
 
-# Use real tmux directly. Inside cmux claude-teams, the `tmux` on PATH is the
+# Use real tmux directly. Inside cmux teams, the `tmux` on PATH is the
 # cmux shim, which cannot host a separate real-tmux test server. We need
 # brew's tmux binary explicitly. Fall back to PATH lookup if not present.
 TMUX_BIN=/opt/homebrew/bin/tmux
@@ -33,11 +33,10 @@ trap cleanup EXIT
 unset CMUX_SOCKET_PATH
 # Strip the cmux tmux shim from PATH so cmt's own ``tmux`` subprocess calls
 # resolve to real homebrew tmux (matches the conftest.py unit-test setup).
-SHIM_DIR="$HOME/.cmuxterm/claude-teams-bin"
 NEWPATH="/opt/homebrew/bin"
 IFS=: read -r -a _parts <<< "$PATH"
 for p in "${_parts[@]}"; do
-  [[ "$p" == "$SHIM_DIR" || "$p" == "/opt/homebrew/bin" ]] && continue
+  [[ "$p" == "$HOME/.cmuxterm/"*-teams-bin || "$p" == "/opt/homebrew/bin" ]] && continue
   NEWPATH="$NEWPATH:$p"
 done
 export PATH="$NEWPATH"

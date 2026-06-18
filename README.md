@@ -2,10 +2,11 @@
 
 A multi-agent harness for running **claude**, **codex**, and **agy**
 (Antigravity / Gemini) side by side as long-lived TUI workers inside a
-terminal multiplexer. The `cmt` CLI gives you 15 primitives — spawn,
+terminal multiplexer. The `cmt` CLI gives you raw primitives — spawn,
 ask, kill, status, wait-status, capture, message-passing — and works
-identically in real **tmux** and in **`cmux claude-teams`** (which uses
-its native CLI under the hood).
+identically in real **tmux** and in **cmux teams modes** such as
+`cmux claude-teams` and `cmux codex-teams` (which use the native CLI
+under the hood).
 
 Built for the workflow where you want a second (or third) AI in the
 loop: an independent reviewer, a parallel investigator, a P2P
@@ -29,10 +30,12 @@ For local development against the working copy:
 
 ## Quick start
 
-From a tmux or `cmux claude-teams` session:
+From a tmux or cmux teams session:
 
 ```bash
 CMT=plugins/claude-multi-teams/skills/claude-multi-teams/bin/cmt
+
+$CMT doctor
 
 $CMT spawn claude alice
 $CMT spawn codex  bob
@@ -44,9 +47,9 @@ echo "$reply"
 $CMT kill --all
 ```
 
-## The 15 primitives
+## The primitives
 
-The 12 **foundation** ops (every workflow uses these):
+The **foundation** ops (every workflow uses these):
 
 ```
 cmt spawn <agent> <name> [--cwd DIR] [--replace]
@@ -65,6 +68,7 @@ cmt wait-status  <name> <target>
 cmt wait-output  <name> --match REGEX [--text]
 
 cmt whoami       [--json]                # called from inside an agent's pane
+cmt doctor       [--json]                # diagnose tmux/cmux readiness for spawn
 ```
 
 The 3 **actor-model extensions** for deadlock-proof P2P / consensus
@@ -95,9 +99,9 @@ per-agent specifics in [`CONTEXT.md`](CONTEXT.md).
 
 - **Real tmux** (`$TMUX` set, not pointing at cmux's fake path): calls the
   `tmux` CLI directly.
-- **cmux claude-teams** (`$TMUX` starts with `/tmp/cmux-claude-teams/` *or*
-  `$CMUX_SOCKET_PATH` is set, which is the case inside any cmux-spawned
-  pane): bypasses the tmux shim and calls the `cmux` native CLI
+- **cmux teams** (`$TMUX` starts with `/tmp/cmux-<mode>/` *or*
+  `$CMUX_SOCKET_PATH` is set, which is the case inside some cmux-spawned
+  panes): bypasses the tmux shim and calls the `cmux` native CLI
   (`new-pane`, `paste-buffer`, `send-key`, `capture-pane`,
   `close-surface`). Spawned panes appear as real surfaces in the cmux
   sidebar.
@@ -106,6 +110,10 @@ Concurrent cmux calls are serialized via a host-wide flock on
 `/tmp/cmt-cmux.lock` to avoid races. See
 [`docs/adr/0002`](docs/adr/0002-mux-dual-backend.md) and
 [`docs/adr/0004`](docs/adr/0004-cmux-cli-serialization.md).
+
+If an agent is unsure whether CMT can run, use `cmt doctor`. A refusal
+should be based on missing parent pane state, not on "not being in cmux":
+real tmux is a supported host.
 
 ## P2P safety
 
