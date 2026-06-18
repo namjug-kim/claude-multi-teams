@@ -1,6 +1,6 @@
 ---
 name: claude-multi-teams
-description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides 13 foundation primitives (spawn / kill / list / ask / send / keys / capture / modal / last-reply / status / wait-status / wait-output / whoami) plus 3 actor-model extensions (enqueue / dequeue / inbox) for deadlock-proof P2P / consensus flows. Works in both real tmux and `cmux claude-teams`.
+description: Spawn and drive sibling AI CLI agents (claude / codex / agy) in long-lived tmux or cmux panes via the `cmt` CLI. Use when the user asks to coordinate a second AI for review / parallel investigation / writing+reviewing / "ask another model" — or when *you* (the assistant) decide a different model would handle a subtask better. Provides foundation primitives (spawn / kill / list / ask / send / keys / capture / modal / last-reply / status / wait-status / wait-output / whoami / doctor) plus actor-model extensions (enqueue / dequeue / inbox) for deadlock-proof P2P / consensus flows. Works in both real tmux and cmux teams modes such as `cmux claude-teams` and `cmux codex-teams`.
 allowed-tools: Bash
 ---
 
@@ -81,6 +81,7 @@ cmt wait-status  <name> <target>
 cmt wait-output  <name> --match REGEX [--text]
 
 cmt whoami       [--json]                # from inside a spawned pane → self lookup
+cmt doctor       [--json]                # diagnose tmux/cmux readiness for spawn
 
 # workflow layer
 cmt wf role set <name> "role"            # stable identity for the agent
@@ -246,6 +247,12 @@ cmt kill reviewer
    pane, the agent runs in its respective "skip approvals" mode. Treat
    spawned agents accordingly — don't `cmt spawn` an agent for code you
    wouldn't trust.
+5. **Do not treat CMT as cmux-only.** It works in real tmux and in
+   cmux teams modes such as `cmux claude-teams` and `cmux codex-teams`.
+   Before refusing a user request, run `cmt doctor`
+   (or inspect `TMUX` / `TMUX_PANE` / `CMUX_SOCKET_PATH`). Refuse only
+   when no parent pane can be resolved, and phrase that as "not inside a
+   tmux/cmux pane", not "not inside cmux".
 
 ## Status / liveness
 

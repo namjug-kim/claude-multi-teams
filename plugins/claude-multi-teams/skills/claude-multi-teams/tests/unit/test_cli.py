@@ -17,7 +17,7 @@ def test_help_exits_zero(capsys) -> None:
         main(["--help"])
     assert ei.value.code == 0
     out = capsys.readouterr().out
-    assert "spawn" in out and "ask" in out and "kill" in out
+    assert "spawn" in out and "ask" in out and "kill" in out and "doctor" in out
 
 
 def test_unknown_command_exits_nonzero() -> None:
@@ -92,3 +92,64 @@ def test_whoami_via_cli_when_unset(
     monkeypatch.delenv("CMT_AGENT_ID", raising=False)
     rc = main(["whoami"])
     assert rc == 1
+
+
+def test_doctor_without_mux_reports_not_ready(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from cmt import mux as mux_mod
+
+    monkeypatch.setenv("CMT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    monkeypatch.delenv("CMT_AGENT_ID", raising=False)
+    monkeypatch.setattr(mux_mod, "current_pane", lambda: None)
+
+    rc = main(["doctor", "--json"])
+    assert rc == 0
+
+    import json as _json
+    data = _json.loads(capsys.readouterr().out)
+    assert data["host"] == "none"
+    assert data["backend"] == "tmux"
+    assert data["spawn_ready"] is False
+    assert "real tmux or cmux teams" in data["reason"]
+
+
+def test_doctor_cmux_env_reports_cmux_backend(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("CMT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    monkeypatch.setenv("TMUX_PANE", "surface:12")
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+
+    rc = main(["doctor", "--json"])
+    assert rc == 0
+
+    import json as _json
+    data = _json.loads(capsys.readouterr().out)
+    assert data["host"] == "cmux"
+    assert data["backend"] == "cmux"
+    assert data["spawn_ready"] is True
+    assert data["parent_pane"] == "surface:12"
+
+
+def test_doctor_codex_teams_tmux_prefix_reports_cmux_backend(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("CMT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("TMUX", "/tmp/cmux-codex-teams/fake,0,0")
+    monkeypatch.setenv("TMUX_PANE", "surface:12")
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+
+    rc = main(["doctor", "--json"])
+    assert rc == 0
+
+    import json as _json
+    data = _json.loads(capsys.readouterr().out)
+    assert data["host"] == "cmux"
+    assert data["backend"] == "cmux"
+    assert data["spawn_ready"] is True
+    assert data["parent_pane"] == "surface:12"

@@ -20,23 +20,33 @@ def tmux_server(monkeypatch):
 
     Hard-wires the absolute path to homebrew tmux (``/opt/homebrew/bin/tmux``)
     so the fixture NEVER lands on the cmux ``tmux`` shim when tests run inside
-    ``cmux claude-teams``. Going through the shim would create real cmux
+    cmux teams modes. Going through the shim would create real cmux
     panes/workspaces in the user's window — destructive pollution we will not
     tolerate.
 
     Also rewrites $PATH so cmt.mux's own ``tmux`` subprocess calls (running
-    in this same test process) hit real tmux, and clears $CMUX_SOCKET_PATH so
-    paste_bracketed takes the real-tmux branch (not the cmux native bypass).
+    in this same test process) hit real tmux, and clears cmux environment
+    hints so tests cannot accidentally call the user's real cmux app.
     """
+    from cmt import mux as mux_mod
+
     if not Path(_REAL_TMUX).exists():
         pytest.skip(f"real tmux binary not found at {_REAL_TMUX}")
-    shim_dir = str(Path.home() / ".cmuxterm" / "claude-teams-bin")
+    shim_root = Path.home() / ".cmuxterm"
     paths = ["/opt/homebrew/bin"] + [
         p for p in os.environ.get("PATH", "").split(":")
-        if p != shim_dir and p != "/opt/homebrew/bin"
+        if not (
+            p != ""
+            and p != "/opt/homebrew/bin"
+            and Path(p).parent == shim_root
+            and Path(p).name.endswith("-teams-bin")
+        )
+        and p != "/opt/homebrew/bin"
     ]
     monkeypatch.setenv("PATH", ":".join(paths))
     monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+    for env_var in mux_mod._CMUX_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
 
     sock = Path(f"/tmp/cmt-test-{os.getpid()}-{time.monotonic_ns()}.sock")
     try:

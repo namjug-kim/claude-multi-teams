@@ -187,6 +187,72 @@ def test_real_tmux_wins_over_stale_cmux_socket_path(tmux_server, monkeypatch) ->
         shutil.rmtree(fake_bin, ignore_errors=True)
 
 
+def test_tmux_server_fixture_clears_cmux_binary_env(monkeypatch, request) -> None:
+    """cmux-launched shells can export a real cmux binary path.
+
+    The tmux_server fixture must clear it before tests install PATH shims;
+    otherwise cmux backend tests can call the user's real app instead of the
+    fake test binary.
+    """
+    monkeypatch.setenv("CMUX_CLAUDE_HOOK_CMUX_BIN", "/bin/false")
+
+    request.getfixturevalue("tmux_server")
+
+    assert "CMUX_CLAUDE_HOOK_CMUX_BIN" not in os.environ
+
+
+def test_cmux_detection_requires_fake_path_directory(monkeypatch) -> None:
+    monkeypatch.setenv("TMUX", "/tmp/cmux-real-tmux.sock,0,0")
+    monkeypatch.setenv("CMUX_SOCKET_PATH", "/tmp/stale-cmux.sock")
+
+    assert mux._use_cmux_native() is False
+
+
+def test_cmux_resolves_app_bundle_binary_when_not_on_path(tmp_path: Path, tmux_server, monkeypatch) -> None:
+    """cmux codex-teams exposes ``CMUX_SOCKET_PATH`` to tool processes but may
+    not put a ``cmux`` executable on PATH. cmt must still find the app bundle
+    CLI instead of failing with FileNotFoundError."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    for env_var in mux._CMUX_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
+    fake_app_bin = tmp_path / "cmux.app" / "Contents" / "Resources" / "bin"
+    fake_app_bin.mkdir(parents=True)
+    log = tmp_path / "cmux-calls.log"
+    fake_cmux = fake_app_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setattr(mux, "_CMUX_BUNDLE_CANDIDATES", (str(fake_cmux),))
+
+    mux._cmux("list-pane-surfaces", check=False)
+
+    assert log.read_text().strip() == "list-pane-surfaces"
+
+
+def test_cmux_env_binary_takes_precedence_over_bundle(tmp_path: Path, tmux_server, monkeypatch) -> None:
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    for env_var in mux._CMUX_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
+    bundle_bin = tmp_path / "bundle" / "cmux"
+    bundle_bin.parent.mkdir()
+    bundle_log = tmp_path / "bundle.log"
+    bundle_bin.write_text(f'#!/bin/sh\necho "$@" >> {bundle_log}\nexit 0\n')
+    bundle_bin.chmod(0o755)
+    env_bin = tmp_path / "env" / "cmux"
+    env_bin.parent.mkdir()
+    env_log = tmp_path / "env.log"
+    env_bin.write_text(f'#!/bin/sh\necho "$@" >> {env_log}\nexit 0\n')
+    env_bin.chmod(0o755)
+    monkeypatch.setattr(mux, "_CMUX_BUNDLE_CANDIDATES", (str(bundle_bin),))
+    monkeypatch.setenv("CMT_CMUX_BIN", str(env_bin))
+
+    mux._cmux("list-pane-surfaces", check=False)
+
+    assert env_log.read_text().strip() == "list-pane-surfaces"
+    assert not bundle_log.exists()
+
+
 def test_kill_pane_idempotent_on_missing(tmux_server) -> None:
     # killing a nonexistent pane should not raise
     mux.kill_pane("%99999")
@@ -197,7 +263,7 @@ def test_pane_alive_false_for_unknown(tmux_server) -> None:
 
 
 def test_paste_bracketed_branches_to_cmux_when_in_claude_teams(tmux_server, monkeypatch) -> None:
-    """When ``$TMUX`` points at the cmux ``claude-teams`` fake tmux path, mux
+    """When ``$TMUX`` points at a cmux teams fake tmux path, mux
     routes paste through the ``cmux`` CLI (not ``tmux``). We don't have a
     real cmux server in this test, so we shim ``cmux`` with a bash function
     that records its argv to a file and exits 0. The dispatch is what's
@@ -223,6 +289,27 @@ def test_paste_bracketed_branches_to_cmux_when_in_claude_teams(tmux_server, monk
         assert "set-buffer" in calls
         assert "paste-buffer" in calls
         assert "surface:99" in calls
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_codex_teams_tmux_prefix_uses_cmux_backend(tmux_server, monkeypatch) -> None:
+    """``cmux codex-teams`` uses the same fake-tmux family as
+    ``claude-teams``. It must not fall through to real tmux and treat
+    ``surface:N`` ids as dead tmux panes."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-codex-teams/fake,0,0")
+
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-codex-teams"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        assert mux.pane_alive("surface:99") is True
+        assert "capture-pane --surface surface:99" in log.read_text()
     finally:
         shutil.rmtree(fake_bin, ignore_errors=True)
 

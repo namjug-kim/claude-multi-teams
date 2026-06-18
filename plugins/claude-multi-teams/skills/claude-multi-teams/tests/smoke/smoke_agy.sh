@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for real agy (Antigravity CLI) under cmux claude-teams.
+# Smoke test for real agy (Antigravity CLI) under cmux teams.
 # Mirrors smoke_codex.sh shape. Verifies:
 #   - agy spawn with --dangerously-skip-permissions
 #   - post_spawn_warmup dismisses the Trust-folder modal and waits for the
@@ -8,11 +8,11 @@
 #   - status flips working ↔ done via the bottom status line
 #   - last-reply re-parses the most recent ─{40,}…> ─{40,} block
 #
-# Requires: cmux claude-teams environment + agy binary on PATH.
+# Requires: cmux teams environment + agy binary on PATH.
 set -euo pipefail
 
-if [[ "${TMUX:-}" != /tmp/cmux-claude-teams/* ]]; then
-  echo "smoke_agy: not inside cmux claude-teams (TMUX=${TMUX:-unset}); skipping"
+if [[ "${TMUX:-}" != /tmp/cmux-*/* && -z "${CMUX_SOCKET_PATH:-}" ]]; then
+  echo "smoke_agy: not inside cmux teams (TMUX=${TMUX:-unset}, CMUX_SOCKET_PATH=${CMUX_SOCKET_PATH:-unset}); skipping"
   exit 0
 fi
 if ! command -v agy >/dev/null 2>&1; then

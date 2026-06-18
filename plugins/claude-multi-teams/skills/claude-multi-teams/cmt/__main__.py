@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cmt.ops import ask as ask_op
 from cmt.ops import capture as capture_op
+from cmt.ops import doctor as doctor_op
 from cmt.ops import keys as keys_op
 from cmt.ops import kill as kill_op
 from cmt.ops import last_reply as last_reply_op
@@ -155,6 +156,15 @@ def _cmd_whoami(args) -> int:
         print(json.dumps(dataclasses.asdict(me), indent=2))
     else:
         print(f"{me.name} (agent={me.agent}, pane={me.pane_id}, id={me.agent_id})")
+    return 0
+
+
+def _cmd_doctor(args) -> int:
+    report = doctor_op.inspect()
+    if args.json:
+        print(json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        print(doctor_op.render(report))
     return 0
 
 
@@ -327,6 +337,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("whoami", help="self-identify from inside a spawned pane")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=_cmd_whoami)
+
+    sp = sub.add_parser("doctor", help="diagnose tmux/cmux readiness for spawn")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=_cmd_doctor)
 
     sp = sub.add_parser("list", help="enumerate tracked agents")
     sp.add_argument("--json", action="store_true")
