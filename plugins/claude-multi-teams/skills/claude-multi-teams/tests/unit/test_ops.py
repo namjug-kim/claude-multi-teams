@@ -235,3 +235,51 @@ def test_kill_all_skips_current_pane(tmp_path: Path, tmux_server, fake_claude) -
     from cmt import mux as mux_mod
     assert mux_mod.pane_alive(os.environ["TMUX_PANE"])
     assert not mux_mod.pane_alive(real.pane_id)
+
+
+def test_spawn_records_state_before_warmup(
+    tmp_path: Path, tmux_server, fake_claude, monkeypatch
+) -> None:
+    """A provisional state file must exist WHILE warmup runs. The warmup window
+    can be minutes (CMT_CODEX_WARMUP_DEADLINE); a hard-kill during it would
+    otherwise leave a live pane with no record — an unreapable orphan."""
+    import dataclasses
+    from cmt import agents
+
+    seen: dict = {}
+
+    def recording_warmup(ctx, pane_id) -> None:
+        seen["state"] = state.load(ctx.name, state_dir=ctx.state_dir)
+
+    spec = dataclasses.replace(agents.AGENTS["claude"], post_spawn_warmup=recording_warmup)
+    monkeypatch.setitem(agents.AGENTS, "claude", spec)
+
+    spawn_op.spawn("claude", "alice", cwd=str(tmp_path), state_dir=tmp_path / "state")
+
+    assert seen["state"] is not None  # provisional record present during warmup
+    assert seen["state"].pane_id  # and it carries the pane id (reapable)
+
+
+def test_spawn_warmup_failure_removes_state_and_kills_pane(
+    tmp_path: Path, tmux_server, fake_claude, monkeypatch
+) -> None:
+    """If warmup fails, the provisional state AND the pane are torn down — a
+    failed spawn leaves neither a stale record nor an orphan pane."""
+    import dataclasses
+    from cmt import agents
+    from cmt import mux as mux_mod
+
+    killed: list[str] = []
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: killed.append(p))
+
+    def failing_warmup(ctx, pane_id) -> None:
+        raise TimeoutError("banner never appeared")
+
+    spec = dataclasses.replace(agents.AGENTS["claude"], post_spawn_warmup=failing_warmup)
+    monkeypatch.setitem(agents.AGENTS, "claude", spec)
+
+    with pytest.raises(TimeoutError):
+        spawn_op.spawn("claude", "alice", cwd=str(tmp_path), state_dir=tmp_path / "state")
+
+    assert killed  # pane closed
+    assert state.load("alice", state_dir=tmp_path / "state") is None  # no stale record

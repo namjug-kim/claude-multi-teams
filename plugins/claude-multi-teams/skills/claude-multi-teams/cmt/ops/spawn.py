@@ -90,20 +90,6 @@ def spawn(
     pane_id = mux.split_pane(parent, cwd, cmd, env_vars)
     session_file = spec.session_file(ctx, env_vars)
 
-    # Run agent-specific spawn-time warmup (e.g., codex Trust-folder modal).
-    # On failure, close the pane we just opened: no state is saved for it, so
-    # nothing else can ever clean it up — leaked panes shrink every subsequent
-    # split until new agents' TUIs can't even render (warmup death spiral).
-    if spec.post_spawn_warmup is not None:
-        try:
-            spec.post_spawn_warmup(ctx, pane_id)
-        except BaseException:
-            try:
-                mux.kill_pane(pane_id)
-            except Exception:
-                pass
-            raise
-
     s = state.AgentState(
         name=name,
         agent=agent,
@@ -115,5 +101,25 @@ def spawn(
         baseline_offset=0,
         spawn_marker=spawn_marker,
     )
+    # Record state BEFORE warmup. The warmup window can be minutes
+    # (CMT_CODEX_WARMUP_DEADLINE); a hard-kill (SIGKILL/reboot) during it would
+    # otherwise leave a live pane with no state file — an orphan no cmt command
+    # could ever reap. With the record in place, `cmt kill <name>` can still
+    # close it. A clean warmup failure tears down both pane and state below.
     state.save(s, state_dir=state_dir)
+
+    # Run agent-specific spawn-time warmup (e.g., codex Trust-folder modal).
+    # On failure, close the pane AND drop the record we just wrote, so a failed
+    # spawn leaves neither an orphan pane nor stale state.
+    if spec.post_spawn_warmup is not None:
+        try:
+            spec.post_spawn_warmup(ctx, pane_id)
+        except BaseException:
+            try:
+                mux.kill_pane(pane_id)
+            except Exception:
+                pass
+            state.remove(name, state_dir=state_dir)
+            raise
+
     return s
