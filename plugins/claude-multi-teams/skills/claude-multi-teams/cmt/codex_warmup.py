@@ -20,6 +20,7 @@ stray Enter never lands on the *next* modal's dangerous default.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable
 
@@ -44,11 +45,13 @@ _PICK_SUBSTRINGS: tuple[str, ...] = (
 def run_codex_warmup(
     capture: Callable[[], str],
     send_key: Callable[[str], None],
-    # 60s, not 20: with several codex spawning at once (plus image-gen load on
-    # the same box) the banner routinely takes >20s to render — 2026-06-11 saw
-    # 3 of 4 parallel spawns die at 20s. The deadline is only an upper bound;
-    # a healthy pane still returns as soon as the banner appears.
-    deadline_s: float = 60.0,
+    # Default (when None): $CMT_CODEX_WARMUP_DEADLINE or 60s. 60s, not 20: with
+    # several codex spawning at once (plus image-gen load on the same box) the
+    # banner routinely takes >20s to render — 2026-06-11 saw 3 of 4 parallel
+    # spawns die at 20s. A heavy-load caller (e.g. a warm-pool driver) can raise
+    # it via the env var. The deadline is only an upper bound; a healthy pane
+    # still returns as soon as the banner appears.
+    deadline_s: float | None = None,
     poll_interval: float = 0.3,
 ) -> None:
     """Poll ``capture()`` until ``BANNER_MARKER`` is on screen, answering any
@@ -57,6 +60,8 @@ def run_codex_warmup(
     Raises ``TimeoutError`` if the banner never appears within ``deadline_s``;
     the message includes the last modal seen, for diagnosis.
     """
+    if deadline_s is None:
+        deadline_s = float(os.environ.get("CMT_CODEX_WARMUP_DEADLINE", "60") or "60")
     deadline = time.monotonic() + deadline_s
     # Per modal-occurrence progress: options-tuple -> "digit" | "done".
     progress: dict[tuple[str, ...], str] = {}
