@@ -301,13 +301,24 @@ def _cmux_split_pane(parent_pane: str, cwd: str, cmd: str, env_vars: dict[str, s
     # output format: "OK surface:58 pane:53 workspace:1\n"
     surface_ref = next(tok for tok in res.stdout.split() if tok.startswith("surface:"))
 
-    prefix_parts = [f"cd {shlex.quote(cwd)} &&"]
-    if env_vars:
-        prefix_parts.append(" ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items()))
-    prefix_parts.append("exec")
-    full_cmd = " ".join(prefix_parts) + " " + cmd
-    _cmux("send", "--surface", surface_ref, full_cmd, stdout=subprocess.DEVNULL)
-    _cmux("send-key", "--surface", surface_ref, "Enter", stdout=subprocess.DEVNULL)
+    # The pane now exists. If delivering the command fails, close it before
+    # propagating: the caller never receives surface_ref, so no state is saved
+    # and nothing could ever reap this pane — it would shrink every future split
+    # until new TUIs can't render (the warmup death spiral, see ops/spawn.py).
+    try:
+        prefix_parts = [f"cd {shlex.quote(cwd)} &&"]
+        if env_vars:
+            prefix_parts.append(" ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items()))
+        prefix_parts.append("exec")
+        full_cmd = " ".join(prefix_parts) + " " + cmd
+        _cmux("send", "--surface", surface_ref, full_cmd, stdout=subprocess.DEVNULL)
+        _cmux("send-key", "--surface", surface_ref, "Enter", stdout=subprocess.DEVNULL)
+    except BaseException:
+        try:
+            _cmux_kill_pane(surface_ref)
+        except Exception:
+            pass
+        raise
     return surface_ref
 
 

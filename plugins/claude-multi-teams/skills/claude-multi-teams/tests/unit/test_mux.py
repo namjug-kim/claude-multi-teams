@@ -451,3 +451,36 @@ def test_cmux_send_keys_routes_literal_chars_through_send(tmux_server, monkeypat
         assert lines[1] == "send-key --surface surface:99 enter"
     finally:
         shutil.rmtree(fake_bin, ignore_errors=True)
+
+
+def test_cmux_split_pane_closes_pane_when_send_fails(tmux_server, monkeypatch) -> None:
+    """`new-pane` succeeds but the follow-up `send` fails: the created surface
+    must be closed before the error propagates. Otherwise split_pane raises
+    before returning the id, so spawn never records state and the live pane is
+    an orphan no cmt command can ever reap."""
+    monkeypatch.setenv("TMUX", "/tmp/cmux-claude-teams/fake,0,0")
+    fake_bin = Path(os.environ["HOME"]) / ".cmt-test-bin-splitfail"
+    fake_bin.mkdir(exist_ok=True)
+    log = fake_bin / "cmux-calls.log"
+    log.write_text("")
+    fake_cmux = fake_bin / "cmux"
+    fake_cmux.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> {log}\n'
+        'case "$1" in\n'
+        '  new-pane) echo "OK surface:77 pane:5 workspace:1"; exit 0 ;;\n'
+        "  send) exit 1 ;;\n"  # delivering the command fails
+        "  *) exit 0 ;;\n"
+        "esac\n"
+    )
+    fake_cmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    try:
+        with pytest.raises(subprocess.CalledProcessError):
+            mux.split_pane("%parent", cwd="/tmp", cmd="bash", env_vars={})
+        calls = log.read_text()
+        assert "new-pane" in calls
+        # the just-created surface must be reaped, not leaked
+        assert "close-surface --surface surface:77" in calls
+    finally:
+        shutil.rmtree(fake_bin, ignore_errors=True)
