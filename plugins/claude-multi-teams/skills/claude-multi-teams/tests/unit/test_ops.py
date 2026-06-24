@@ -205,6 +205,33 @@ def test_spawn_replace_skips_close_when_pane_not_alive(tmp_path: Path, monkeypat
     assert s.pane_id == "surface:300"
 
 
+def test_spawn_replace_aborts_when_old_pane_wont_close(tmp_path: Path, monkeypatch) -> None:
+    """spawn --replace over a LIVE pane whose close silently fails (still alive
+    afterwards) must abort, not drop the old state + reuse the name — doing so
+    would orphan the still-live old pane (its record overwritten by the new
+    spawn). The old record must be preserved so `cmt kill` can still reap it."""
+    from cmt import mux as mux_mod
+    state.save(
+        state.AgentState(
+            name="alice", agent="claude", agent_id="old", pane_id="surface:7",
+            cwd="/tmp", started_at="2026-05-29T00:00:00Z",
+        ),
+        state_dir=tmp_path / "state",
+    )
+    monkeypatch.setenv("TMUX_PANE", "%0")
+    # pane stays alive even after kill_pane (close failed / busy)
+    monkeypatch.setattr(mux_mod, "pane_alive", lambda p: True)
+    monkeypatch.setattr(mux_mod, "kill_pane", lambda p: None)  # no-op close
+    monkeypatch.setattr(mux_mod, "split_pane", lambda *a, **k: "surface:300")
+
+    with pytest.raises(RuntimeError):
+        spawn_op.spawn("claude", "alice", cwd=str(tmp_path), replace=True,
+                       state_dir=tmp_path / "state")
+
+    loaded = state.load("alice", state_dir=tmp_path / "state")
+    assert loaded is not None and loaded.pane_id == "surface:7"  # old handle kept
+
+
 def _ghost_on_current_pane(name: str, cwd: Path) -> state.AgentState:
     """A tracked agent whose pane_id is the pane cmt runs in — simulates a
     stale/recycled ``surface:N`` (or ``%pane``) ref now pointing at the

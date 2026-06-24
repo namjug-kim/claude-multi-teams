@@ -47,6 +47,16 @@ def spawn(
         # main tab). See cmt.ops.kill.
         if mux.pane_alive(existing.pane_id):
             mux.kill_pane(existing.pane_id)
+            # Verify the close landed before dropping the record and reusing the
+            # name. cmux close-surface is best-effort (check=False); if the pane
+            # is still alive the close failed, and removing its state here would
+            # orphan a live pane — its record overwritten by the new spawn.
+            if mux.pane_alive(existing.pane_id):
+                raise RuntimeError(
+                    f"replace: could not close existing pane {existing.pane_id} "
+                    f"for {name!r} (still alive after close); not dropping its "
+                    f"state. Retry, or `cmt kill {name}` then spawn."
+                )
         state.remove(name, state_dir=state_dir)
 
     parent = parent_pane or os.environ.get("TMUX_PANE") or mux.current_pane()
